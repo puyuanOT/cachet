@@ -29,8 +29,8 @@ records, and CLI targets.
 - `benchmark_plan.py` emits reproducible V1 dataset, benchmark, storage,
   native engine-probe, release-readiness sidecar, and release-evidence command
   plans. Its local and Databricks command-plan path is deliberately closed to
-  the built-in V1 datasets and scorers; it does not import scorer plugins from
-  user-provided module paths. Custom datasets and scorers use the programmatic
+  the built-in V1 datasets and Quality v2 scorers; it does not import scorer
+  plugins from user-provided module paths. Custom datasets and scorers use the programmatic
   `DatasetScorerRegistry` path through `run_openai_compatible_benchmark` and,
   when creating handoffs, the `scorer_registry` argument to
   `generate_benchmark_handoff_bundles`.
@@ -47,14 +47,16 @@ records, and CLI targets.
 - `benchmark_statistics.py` computes deterministic paired bootstrap confidence
   intervals for every dataset and cache arm.
 - `benchmark_dataset_sources.py` stages public full-dataset benchmark sources
-  into canonical V1 JSONL with source, split, count, and synthetic NIAH-grid
+  into canonical V1 JSONL, builds the Quality v2 NIAH grid from the HotpotQA and
+  MusiQue source paragraphs, and records source, split, count, and NIAH-builder
   provenance.
 - `benchmark_plan_executor.py` runs command-plan JSON files for local or managed
   job runners and records source-plan SHA-256 provenance.
 - `benchmark_runner.py` owns baseline and cache-arm execution against
   caller-provided or OpenAI-compatible engines.
 - `benchmarks.py` owns V1 dataset specs, prompt partitioning, cache-prefix
-  request helpers, measurements, summaries, and baseline comparisons.
+  request helpers, the parse-then-score `DatasetScorer` contract, measurements,
+  summaries, and baseline comparisons.
 - `cache.py` exposes CPU and local-disk cache tiers.
 - `databricks_engine_probe_job.py` emits a Databricks run payload for native
   vLLM/SGLang engine-probe evidence, including backend-specific delegate
@@ -84,8 +86,8 @@ records, and CLI targets.
   package metadata pins are current, serving-profile runtime pins are exact,
   and any non-latest runtime or resolver-held transitive dependency has an
   explicit compatibility reason.
-- `dataset_prep.py` owns Biography, HotpotQA, MusiQue, and NIAH
-  normalization into canonical benchmark JSONL.
+- `dataset_prep.py` owns Biography, HotpotQA, MusiQue, and staged Quality v2
+  NIAH normalization into canonical benchmark JSONL.
 - `engine.py` builds engine-ready payload handles from materialized KV.
 - `engine_adapters.py` defines the external vLLM/SGLang adapter handoff and
   native-probe descriptor contracts.
@@ -128,9 +130,10 @@ records, and CLI targets.
   identity, traceability, Refactor-skill, and GPT-5.5 review evidence for the
   project workflow; recursive directory validation skips only clean
   validation-summary sidecars.
-- `quality_v2.py` defines quality benchmark protocol v2: Qwen3 chat framing,
-  256-token decoding, the versioned tolerant `<final_answer>` parser with strict
-  format compliance reported separately, WikiBio references without `-lrb-`
+- `quality_v2.py` defines Quality v2, the answer-quality protocol every
+  benchmark path uses: Qwen3 chat framing, 256-token decoding, the versioned
+  tolerant `<final_answer>` parser with strict format compliance reported
+  separately, the default scorer registry, WikiBio references without `-lrb-`
   disambiguators, natural-text NIAH haystacks, and paired bootstrap
   non-inferiority scoring.
 - `release_bundle.py` copies validated release evidence, optional benchmark

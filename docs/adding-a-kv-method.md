@@ -192,7 +192,10 @@ metric function and `prompt_function`, then pass the same immutable
 `DatasetScorerRegistry` to `run_benchmark_suite` (or
 `run_openai_compatible_benchmark`) and `generate_benchmark_handoff_bundles`.
 This makes the cached prefix come from the scorer-owned logical prompt instead
-of the built-in V1 template. All custom scorers in one run/bundle must share a
+of the built-in Quality v2 prompt. A publication-approved scorer also declares a
+versioned `answer_parser_function`; its metric function then scores the answer
+that parser extracts, and an output the parser rejects scores zero on every
+metric. All custom scorers in one run/bundle must share a
 prompt-template version, and that version must match the manifest and artifact
 identity. The checked-in remote benchmark-plan CLI remains deliberately
 V1-closed; custom scorer code is an explicit programmatic integration rather

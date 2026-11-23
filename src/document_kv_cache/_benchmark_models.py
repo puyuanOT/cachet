@@ -574,8 +574,8 @@ class BenchmarkScorerManifest:
     metric_specs: tuple[DatasetMetricSpec, ...]
     prompt_plugin_path: str
     prompt_template_version: str
-    # Empty means the built-in v1 final-answer parser, which keeps manifests
-    # recorded before parser identities existed byte-for-byte unchanged.
+    # Empty when the scorer declares no answer parser; the publication gate
+    # rejects such scorers.
     answer_parser_id: str = ""
     answer_parser_version: str = ""
     answer_parser_plugin_path: str = ""

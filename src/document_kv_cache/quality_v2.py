@@ -1,25 +1,29 @@
-"""Quality benchmark protocol v2 for the vLLM 0.30.0 publication.
+"""Quality v2, the answer-quality protocol of every Cachet benchmark.
 
-The sealed vLLM 0.27.1 full-score run (protocol
-``cachet-vllm-0.27.1-complete-score-v2``) sent raw completions without the model's
-chat template, stopped decoding at 64 tokens, and scored only an exact
-whole-output ``<final_answer>`` block.  Under that
-request shape the instruct model echoed instruction text before its answer, so the
-strict parser rejected almost every output for both arms and the published quality
-numbers do not measure answer quality.
+Benchmark runs, handoff generation, plans, and smoke runners prompt, decode,
+parse, and score through this module by default, and release evidence re-scores
+every measurement with its scorers:
 
-v2 keeps the model, runtime, datasets, answer normalisation and the per-document
-Vanilla cache method, and changes only what the v1 audit showed to be broken:
-
-* the same benchmark prompt sections are wrapped in the Qwen3 chat template (a
+* the benchmark prompt sections are wrapped in the Qwen3 chat template (a
   single user turn, exactly as ``apply_chat_template`` renders it);
-* decoding may run to 256 tokens;
+* decoding runs at temperature 0 for up to 256 tokens;
 * answers come from a versioned tolerant parser (the first closed
   ``<final_answer>`` block that is not the echoed placeholder), and strict
-  whole-output compliance is reported separately as a format metric;
+  whole-output compliance is reported only as a format metric;
 * biography references and predictions are compared without WikiBio's
   ``-lrb- ... -rrb-`` disambiguators;
 * NIAH uses natural-text haystacks with a numeric needle at a paragraph boundary.
+
+Why: the earlier protocol, sealed with the vLLM 0.27.1 full-score run as
+``cachet-vllm-0.27.1-complete-score-v2``, sent raw completions without the chat
+template, stopped decoding at 64 tokens, and accepted only an exact whole-output
+``<final_answer>`` block.  The instruct model echoed instruction text before its
+answer, so that parser rejected almost every output for both arms and its
+quality numbers did not measure answer quality.
+
+The sealed vLLM 0.30.0 Quality v2 report validates against
+``quality_v2_protocol_record()``, so the identities and plugin paths that record
+names must not change.
 """
 
 from __future__ import annotations
@@ -153,7 +157,7 @@ def extract_first_final_answer(output_text: str) -> FinalAnswerExtraction:
 
 
 def quality_v2_prompt_parts(example: BenchmarkExample) -> BenchmarkPromptParts:
-    """Wrap the v1 benchmark sections in a single Qwen3 chat user turn.
+    """Wrap the dataset's benchmark sections in a single Qwen3 chat user turn.
 
     The chat markers ride on the leading cached section and on the online suffix,
     so per-document segmentation of the document context is unchanged.

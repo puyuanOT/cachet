@@ -30,12 +30,14 @@ control roots and must not be copied into committed benchmark evidence. Public
 sanitized evidence may retain only the SHA-256 principal attestation returned
 by the live current-user check.
 
-The default V1 registry contains four publication-approved, versioned scorer
-contracts. All four require the shared versioned final-answer parser and emit
-only their declared metrics:
+The default registry, Quality v2's `quality_v2_scorer_registry()`, contains
+four publication-approved, versioned scorer contracts. All four score the answer
+the shared versioned `<final_answer>` parser extracts, score zero on outputs it
+rejects, and emit only their declared metrics:
 
 - Biography uses Cachet's normalized-title exact match for the versioned entity
-  identification task. Its normalizer preserves name-significant punctuation.
+  identification task after dropping WikiBio `-lrb- ... -rrb-` disambiguators.
+  Its normalizer preserves name-significant punctuation.
 - HotpotQA ports only the answer EM/F1 portion of the official
   [`hotpot_evaluate_v1.py`](https://github.com/hotpotqa/hotpot/blob/3635853403a8735609ee997664e1528f4480762a/hotpot_evaluate_v1.py)
   script, pinned to upstream commit
@@ -46,8 +48,9 @@ only their declared metrics:
   `922ac98f19a201998dbdae6d7f2887a5258dbdeb`, maximized over the preserved
   answer aliases. Cachet does not claim support-index or answerability-group
   metrics.
-- NIAH uses exact requested-value accuracy over the frozen 8k/16k/32k by
-  10%/50%/90% needle-position grid. The first canonical cell contains 112
+- NIAH uses exact needle-value accuracy over the frozen 8k/16k/32k by
+  10%/50%/90% needle-position grid that `build_quality_v2_niah_records` builds
+  from natural-text paragraphs. The first canonical cell contains 112
   examples and each of the other eight contains 111; redistribution is not an
   equivalent 1,000-example grid.
 

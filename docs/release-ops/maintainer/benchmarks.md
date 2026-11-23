@@ -33,10 +33,20 @@ Running these commands as Databricks jobs is covered in
   with speedups and quality deltas, successful latency measurements, and
   quality rates are present. Single-dataset smoke runs are allowed but report
   `v1_evidence.ok` as false.
-- Quality v2 (`cachet.quality_v2`) is a library API with no packaged CLI: it
-  supplies the chat-framed prompts, tolerant parser, scorers, and report and
-  README-region validators for that protocol. The job runner that executed it
-  is preserved at the `vllm-0300-campaign-archive` tag.
+- Every benchmark path uses the Quality v2 answer-quality protocol
+  (`cachet.quality_v2`): one Qwen3 chat user turn per request (prompt template
+  `v3-qwen3-chat-final-answer`), decoding at temperature 0 for up to 256 tokens,
+  the tolerant `<final_answer>` parser, and the scorer that
+  `quality_v2_scorer_registry()` registers for each dataset. The runner,
+  handoff generation, command plans, smoke runners, and Databricks job helpers
+  default to it. Release evidence re-scores every measurement's output with
+  its dataset's Quality v2 scorer and rejects measurements that declare another
+  scorer or carry scores or labels that re-scoring does not reproduce.
+  Strict whole-output `<final_answer>` compliance is only a format metric.
+- Quality v2 is a library API with no packaged CLI: besides the prompts,
+  parser, and scorers it supplies the NIAH builder and the report and
+  README-region validators. The job runner that executed the sealed campaign is
+  preserved at the `vllm-0300-campaign-archive` tag.
 
 For servers exposing the OpenAI-compatible completions API, use the
 stdlib-only `OpenAICompatibleCompletionEngine`. It posts the full logical
@@ -88,10 +98,10 @@ For SGLang prepared runs, add `--backend sglang --sglang-hicache-page-size 16`
 to write `document_kv.sglang_hicache_page_keys` into the manifest in the same
 pass. The generator must expose the tokenizer used for the cached prefix. The
 page size must match the KV layout block size, keys are emitted only for full
-payload pages, and they match the standard V1 plain cache prefix; run the
-prepared SGLang path with the plain prompt format, or supply
+payload pages, and they match the Quality v2 cache prefix sent as completion
+text; run the prepared SGLang path with the plain prompt format, or supply
 prompt-format-specific page keys through the manifest template when the
-runtime prompt uses a chat template.
+runtime prompt goes through the server's chat template.
 
 When handoff JSON files already exist, build the closed manifest the benchmark
 plan consumes. The template supports `{dataset}` and `{example_id}`, and every
@@ -223,20 +233,29 @@ python -m document_kv_cache.benchmark_plan \
 
 ## Dataset Prep And Runner
 
+NIAH has no raw source file. Stage it, together with the other three datasets,
+from the public HotpotQA, MusiQue, and WikiBio sources:
+
+```bash
+python -m cachet.benchmark_dataset_sources --output-dir /data/raw
+```
+
+The NIAH grid comes from `build_quality_v2_niah_records` over every HotpotQA,
+then MusiQue, source paragraph in file order, with prompt tokens counted by the
+Qwen3 tokenizer at revision `cdbee75f17c01a7cc42f958dc650907174af0554`.
+Staging needs `pyarrow` and `transformers`, plus `huggingface_hub` unless
+`--hotpotqa-parquet`, `--musique-jsonl`, and `--wikibio-zip` point at local
+copies. `dataset-source-metadata.json` records the builder, seed, and token
+counter. The staged `biography.jsonl`, `hotpotqa.jsonl`, `musique.jsonl`, and
+`niah.jsonl` files are valid `--input-jsonl` and plan `--raw-dataset` inputs.
+
 Convert a single raw dataset without a plan:
 
 ```bash
-python -m document_kv_cache.dataset_prep \
+python -m cachet.dataset_prep \
   --dataset hotpotqa \
   --input-jsonl /data/raw_hotpotqa.jsonl \
   --output-jsonl /data/hotpotqa.jsonl
-
-python -m document_kv_cache.dataset_prep \
-  --dataset niah \
-  --haystack-file /data/haystack.txt \
-  --needle-answer "blue lantern" \
-  --count 100 \
-  --output-jsonl /data/niah.jsonl
 ```
 
 Malformed rows fail with the physical JSONL line number. Then run the
@@ -260,6 +279,8 @@ python -m document_kv_cache.benchmark_runner \
 - Both arms post the full logical prompt by default. Add `--cache-base-url` and
   `--cache-runtime-prompt` only when that cache endpoint is a KV-aware adapter
   or proxy that binds the cached prefix out of band.
+- `--max-tokens` defaults to the Quality v2 budget of 256 and `--temperature`
+  to 0.
 
 ## Storage-Reader Benchmark
 
