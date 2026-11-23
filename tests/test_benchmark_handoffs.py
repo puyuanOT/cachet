@@ -59,6 +59,10 @@ from document_kv_cache.methods import (
     default_method_registry,
 )
 from document_kv_cache.models import CacheGenerationMethod, KVCacheKey
+from document_kv_cache.quality_v2 import (
+    QUALITY_V2_PROMPT_TEMPLATE_VERSION,
+    quality_v2_prompt_parts,
+)
 from document_kv_cache.reference_method import (
     REFERENCE_METHOD_ID,
     register as register_reference_method,
@@ -824,6 +828,78 @@ def test_custom_dataset_handoff_uses_the_runner_scorer_prompt_prefix(tmp_path):
             align_bytes=1,
             require_artifact_contract=False,
         )
+
+
+def test_default_handoff_caches_the_quality_v2_prompt_the_runner_serves(tmp_path):
+    input_path = tmp_path / "hotpotqa.jsonl"
+    input_path.write_text(json.dumps(multi_document_record()) + "\n", encoding="utf-8")
+    example = load_benchmark_jsonl(input_path)[0]
+    serving_parts = quality_v2_prompt_parts(example)
+
+    result = generate_benchmark_handoff_bundles(
+        input_path,
+        output_dir=tmp_path / "bundles",
+        generator=AlignedGenerator(),
+        layout=tiny_layout(),
+        align_bytes=1,
+        require_artifact_contract=False,
+    )
+
+    entry = result.manifest.entries[0]
+    assert [ref.key.prompt_template_version for ref in result.cache_refs] == [
+        QUALITY_V2_PROMPT_TEMPLATE_VERSION
+    ]
+    payload_path = tmp_path / "bundles" / "hotpotqa" / f"{entry.request_id}.kv"
+    assert payload_path.read_bytes().endswith(
+        serving_parts.cache_prefix_text.encode("utf-8")
+    )
+
+    class CaptureEngine:
+        def __init__(self) -> None:
+            self.requests = []
+
+        def generate(self, request):
+            self.requests.append(request)
+            return BenchmarkGeneration(
+                output_text="<final_answer>Ada Lovelace</final_answer>",
+                prompt_tokens=4,
+                completion_tokens=2,
+                ttft_seconds=0.1,
+                time_to_completion_seconds=0.2,
+            )
+
+    engine = CaptureEngine()
+    arm = BenchmarkArm(arm_id="baseline", uses_cache=False, description="baseline")
+    run_benchmark_suite(
+        BenchmarkSuite(
+            suite_id="default-prompt-suite",
+            examples=(example,),
+            datasets=("hotpotqa",),
+        ),
+        {arm.arm_id: engine},
+        arms=(arm,),
+    )
+
+    served = engine.requests[0]
+    assert served.prompt_parts == serving_parts
+    assert served.logical_prompt_text.startswith(serving_parts.cache_prefix_text)
+
+
+def test_default_handoff_rejects_a_prompt_template_other_than_quality_v2(tmp_path):
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="scorer-owned prompt template"):
+        generate_benchmark_handoff_bundles(
+            input_path,
+            output_dir=tmp_path / "bundles",
+            generator=AlignedGenerator(),
+            layout=tiny_layout(),
+            prompt_template_version="v2-final-answer",
+            align_bytes=1,
+            require_artifact_contract=False,
+        )
+    assert not (tmp_path / "bundles").exists()
 
 
 def test_bundle_generation_uses_injected_registry_and_strict_contract(tmp_path):
