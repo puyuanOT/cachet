@@ -32,9 +32,10 @@ campaign report under [`appendix/vllm-0271-publication-v1/`](appendix/vllm-0271-
 The campaign ran on vLLM 0.30.0; `vllm-0271-publication-v1` is its sealed
 identifier. Two later, separately sealed measurements complete it:
 
-- [Quality Benchmark v2](#quality-benchmark-v2) replaces the campaign's score
-  table as the measure of answer quality. The v1 full-score protocol did not
-  measure answer quality (see the warning on that table).
+- [Quality Benchmark v2](#quality-benchmark-v2) is the measure of answer
+  quality. The sealed report also holds the campaign's v1 full-score pass,
+  which is not published here: its strict parser rejected most outputs of both
+  methods, so those scores do not measure answer quality.
 - The [Auxiliary Latency Re-run](#auxiliary-latency-re-run) repeats the four
   auxiliary contrasts (storage, BF16, A10G) with each block's reference and
   treatments under one launch plan, uniform untimed warmup, and measured cold
@@ -64,12 +65,9 @@ that is not part of the package.
 | Deployment blocks | 5 matched fresh-cluster blocks |
 | Requests per method/context/concurrency cell and block | 256 |
 | Latency decode | Forced 256-token decode; exact decoding pins come from the closed latency execution record |
-| Full-score decode | Natural EOS with a 64-token maximum, temperature 0, closed-loop concurrency 4, one paired pass per method, and no prompt padding or tokenizer truncation |
 | No-retry job timeouts | 8k c1/c2/c4: 6/4/4h; 16k: 8/6/4h; 32k: 12/8/4h; all c4 auxiliary jobs: 4h |
 | Experimental units | Core Baseline/Vanilla pair; Disk/RAM/UC trio; 16k-c4 core pair plus BF16/A10G four-job wave |
 | Latency analysis | Paired crossed bootstrap over deployment blocks and shared example identities; no post-hoc cell significance |
-| Full-score analysis | Per-example paired deltas with pointwise 95% paired-example bootstrap intervals, 20,000 draws, and dataset stratification |
-| Full-score scope | One complete paired pass over every selected dataset row; no padding, truncation, sampling replacement, or answer-quality preservation gate |
 | Budget | 1,024 aggregate GPU-hours, 900 active reserved hours, 124 hours unreserved headroom, at most 16 parallel jobs; raised to 2,024 GPU-hours during the campaign (see the ledger disclosures above) |
 | Retained ledger opening | 71.390128 reconciled GPU-hours; exact 236/98/236 post-migration append-only prefix is campaign-bound; zero active reservations |
 | Frozen generation workload | 72,871,510 cache-prefix tokens across Q8 latency, BF16 latency, and complete full-score handoffs; 578.345317 GPU-hours at the 35 token/GPU-s gate |
@@ -78,8 +76,8 @@ that is not part of the package.
 request time. `Vanilla KV` reuses independently generated document KV, stores
 keys pre-RoPE, assembles documents in logical order, applies absolute positions
 at injection, and measures storage-to-GPU hydration inside TTFT. Vanilla is not
-required to preserve Baseline answer quality: the full evaluation is intended
-to measure the quality loss, especially for multi-document QA.
+required to preserve Baseline answer quality: Quality Benchmark v2 measures the
+quality loss, especially for multi-document QA.
 
 KV Packet, CacheBlend, and InfoFlow KV have no executable Cachet benchmark path
 in this campaign. Their cells remain explicitly unsupported rather than being
@@ -162,60 +160,6 @@ application-owned engine-native method (see
 [`docs/adding-a-kv-method.md`](../docs/adding-a-kv-method.md)), but Cachet ships
 none, so neither row has a smoke, canary, or publication path.
 
-## Benchmark Dataset Score Table
-
-> **These v1 scores do not measure answer quality.** The v1 protocol sent raw
-> completions without the model's chat template, stopped decoding at 64 tokens,
-> and accepted only an output that was exactly one `<final_answer>` block. The
-> instruct model echoed instruction text before answering, so the strict parser
-> rejected most outputs of both methods (see the `extraneous_text` counts) and
-> both columns sit near zero. The table is kept because it is part of the sealed
-> report. Use [Quality Benchmark v2](#quality-benchmark-v2) for answer quality.
-
-The table is a complete paired evaluation over every selected row in the
-four implemented datasets. Full-score values use one paired pass per method
-over all 83,653 natural-length examples, with no padding or tokenizer
-truncation. Requests run at closed-loop concurrency 4, temperature 0, natural
-EOS enabled, and a 64-token maximum. Parser-status cells report the complete
-counts for `ok`, `missing_block`, `multiple_or_malformed_blocks`,
-`extraneous_text`, `nested_block`, and `empty_answer`, including explicit zeros for unobserved
-states. Invalid or malformed final-answer parses receive zero
-and remain in denominators. Scores, deltas, and confidence limits are unit-scale
-fractions rendered to six decimal places; scientific notation is used if a
-nonzero value would otherwise round to zero. Intervals are pointwise 95%
-paired-example bootstrap intervals with 20,000 draws, stratified by dataset;
-NIAH is additionally reported over its frozen nine-cell grid.
-
-<!-- cachet:vllm-0271-publication-table:dataset-scores:begin -->
-| Dataset | Governed metric | n | Baseline | Baseline parser-status counts | Vanilla KV | Vanilla parser-status counts | Vanilla − Baseline | Paired 95% CI |
-| --- | --- | ---: | ---: | --- | ---: | --- | ---: | ---: |
-| Biography | Normalized-title exact match | 72831 | 0.001291 | ok=9196; missing_block=165; multiple_or_malformed_blocks=525; extraneous_text=62945; nested_block=0; empty_answer=0 | 0.001483 | ok=9445; missing_block=67; multiple_or_malformed_blocks=399; extraneous_text=62920; nested_block=0; empty_answer=0 | 0.000192 | [-0.000151, 0.000522] |
-| HotpotQA | Answer exact match | 7405 | 0.054693 | ok=866; missing_block=230; multiple_or_malformed_blocks=2556; extraneous_text=3753; nested_block=0; empty_answer=0 | 0.000270 | ok=5; missing_block=433; multiple_or_malformed_blocks=524; extraneous_text=6443; nested_block=0; empty_answer=0 | -0.054423 | [-0.059689, -0.049291] |
-| HotpotQA | Answer F1 | 7405 | 0.073818 | ok=866; missing_block=230; multiple_or_malformed_blocks=2556; extraneous_text=3753; nested_block=0; empty_answer=0 | 0.000304 | ok=5; missing_block=433; multiple_or_malformed_blocks=524; extraneous_text=6443; nested_block=0; empty_answer=0 | -0.073514 | [-0.079105, -0.067895] |
-| MusiQue | Official answer exact match, alias-max | 2417 | 0.021514 | ok=241; missing_block=129; multiple_or_malformed_blocks=270; extraneous_text=1777; nested_block=0; empty_answer=0 | 0.000000 | ok=1; missing_block=201; multiple_or_malformed_blocks=185; extraneous_text=2030; nested_block=0; empty_answer=0 | -0.021514 | [-0.027307, -0.016136] |
-| MusiQue | Official answer F1, alias-max | 2417 | 0.033233 | ok=241; missing_block=129; multiple_or_malformed_blocks=270; extraneous_text=1777; nested_block=0; empty_answer=0 | 0.000000 | ok=1; missing_block=201; multiple_or_malformed_blocks=185; extraneous_text=2030; nested_block=0; empty_answer=0 | -0.033233 | [-0.039884, -0.026839] |
-| NIAH | Exact-value overall accuracy | 1000 | 0.009000 | ok=19; missing_block=52; multiple_or_malformed_blocks=235; extraneous_text=694; nested_block=0; empty_answer=0 | 0.000000 | ok=0; missing_block=2; multiple_or_malformed_blocks=121; extraneous_text=877; nested_block=0; empty_answer=0 | -0.009000 | [-0.015000, -0.004000] |
-| LongBench v2 | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) |
-| RULER | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) | N/A (runner not implemented) |
-<!-- cachet:vllm-0271-publication-table:dataset-scores:end -->
-
-NIAH is additionally reported as the full 3-by-3 grid below; every cell is a
-governed exact-value accuracy over its bound source examples.
-
-<!-- cachet:vllm-0271-publication-table:niah-grid:begin -->
-| Context | Needle position | n | Baseline accuracy | Vanilla KV accuracy | Vanilla − Baseline | Paired 95% CI |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 8k | 10% | 112 | 0.000000 | 0.000000 | 0.000000 | [0.000000, 0.000000] |
-| 8k | 50% | 111 | 0.000000 | 0.000000 | 0.000000 | [0.000000, 0.000000] |
-| 8k | 90% | 111 | 0.000000 | 0.000000 | 0.000000 | [0.000000, 0.000000] |
-| 16k | 10% | 111 | 0.027027 | 0.000000 | -0.027027 | [-0.063063, 0.000000] |
-| 16k | 50% | 111 | 0.000000 | 0.000000 | 0.000000 | [0.000000, 0.000000] |
-| 16k | 90% | 111 | 0.009009 | 0.000000 | -0.009009 | [-0.027027, 0.000000] |
-| 32k | 10% | 111 | 0.009009 | 0.000000 | -0.009009 | [-0.027027, 0.000000] |
-| 32k | 50% | 111 | 0.018018 | 0.000000 | -0.018018 | [-0.045045, 0.000000] |
-| 32k | 90% | 111 | 0.018018 | 0.000000 | -0.018018 | [-0.045045, 0.000000] |
-<!-- cachet:vllm-0271-publication-table:niah-grid:end -->
-
 ## Quality Benchmark v2
 
 Quality v2 re-measures answer quality for the same model, runtime, datasets,
@@ -236,7 +180,8 @@ the v1 audit showed to be broken:
   with a numeric needle at a paragraph boundary, over the same 3-by-3 grid.
 
 Every selected HotpotQA, MuSiQue, and NIAH example is scored, plus a fixed
-2,000-example Biography diagnostic subset. Each example runs once with full
+2,000-example Biography diagnostic subset. LongBench v2 and RULER have no Cachet
+runner and are not scored. Each example runs once with full
 prefill and once with the Vanilla KV cache on the same vLLM boot, and the two
 outputs are paired by example. Intervals are 95% percentile bootstrap
 intervals over paired examples. The protocol fixes a non-inferiority margin

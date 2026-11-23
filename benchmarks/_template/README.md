@@ -103,30 +103,29 @@ uncertainty; a handful of deployments does not guarantee exact 95% coverage.
 | --- | --- | ---: | ---: | ---: | ---: |
 | Example treatment vs control | 16k, concurrency 4 |  |  |  |  |
 
-## Benchmark Dataset Score Table
+## Answer Quality Table
 
-Describe the dataset scope before the table. For main benchmark score tables,
-evaluate all selected samples of each dataset and mark score cells
-`N/A (full dataset not run)` until those runs are complete. For prepared smoke
-suites, use a
-separate appendix table, state the number of unique examples per dataset and
-repeats per example, and do not label answer-found containment as official
-dataset accuracy. Publication score tables use six decimal places and must use
-scientific notation rather than displaying zero when a nonzero value would
-round to zero.
+Score answer quality with the Quality v2 protocol: chat-template prompts,
+256-token decode at temperature 0, and the `cachet.first_final_answer` parser.
+Report strict whole-output format compliance separately from answer quality.
+Describe the dataset scope before the table, evaluate every selected example of
+each headline dataset, and mark score cells `N/A (full dataset not run)` until
+those runs are complete. Fix the non-inferiority margin before scoring and
+report a dataset that misses it as such. Do not label answer-found containment
+as official dataset accuracy.
 
-| Dataset | Governed metric | n | Baseline | Baseline parser-status counts | Vanilla KV | Vanilla parser-status counts | Vanilla − Baseline | Paired 95% CI |
-| --- | --- | ---: | ---: | --- | ---: | --- | ---: | ---: |
-| Biography | Normalized-title exact match |  |  |  |  |  |  |  |
-| HotpotQA | Answer exact match |  |  |  |  |  |  |  |
-| HotpotQA | Answer F1 |  |  |  |  |  |  |  |
-| MusiQue | Official answer exact match, alias-max |  |  |  |  |  |  |  |
-| MusiQue | Official answer F1, alias-max |  |  |  |  |  |  |  |
-| NIAH | Exact-value overall accuracy |  |  |  |  |  |  |  |
+| Dataset | Role | Metric | Pairs | Full prefill | Vanilla KV | Vanilla − full prefill | Paired 95% CI | Non-inferiority (CI low ≥ −0.02) |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| HotpotQA | Headline, primary | Exact match |  |  |  |  |  |  |
+| HotpotQA | Headline, secondary | Answer F1 |  |  |  |  |  |  |
+| MuSiQue | Headline, primary | Answer exact match, alias-max |  |  |  |  |  |  |
+| MuSiQue | Headline, secondary | Answer F1, alias-max |  |  |  |  |  |  |
+| NIAH | Headline, primary | Exact-value accuracy |  |  |  |  |  |  |
+| Biography | Diagnostic | Exact match |  |  |  |  |  |  |
 
 Publish the NIAH 8k/16k/32k by 10%/50%/90% needle-position grid separately;
-an overall score does not replace any of its nine governed cells. Each grid row
-must report `n`, both arm accuracies, the paired delta, and its paired 95% CI.
+an overall score does not replace any of its nine cells. Each grid row must
+report the pair count, both arm accuracies, and the paired delta.
 
 ## Resource Utilization
 
@@ -161,7 +160,7 @@ List the sanitized records committed beside this README, such as:
 - `document_kv.cache_state_attestation.v1` records for cold-read or
   warm-prefix claims
 - the passing `document_kv.benchmark_publication_gate.v1` record
-- a sealed `cachet.quality_v2_report.v1` record for dataset score tables
+- a sealed `cachet.quality_v2_report.v1` record for answer quality tables
 
 A sealed report and its gate are a pair: the gate's `benchmark_payload_digest`
 must equal the report's `closed_record_sha256`, and neither file qualifies

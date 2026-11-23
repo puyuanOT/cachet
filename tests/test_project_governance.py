@@ -962,7 +962,8 @@ def test_benchmark_surface_is_exactly_the_sealed_published_records():
     )
     assert "N/A (0.27.1 campaign pending)" not in benchmark_markdown
     assert "N/A (0.27.1 full evaluation pending)" not in benchmark_markdown
-    assert "| Dataset | Governed metric | n |" in root_readme
+    assert "| Dataset | Governed metric | n |" not in root_readme
+    assert "Benchmark Dataset Score Table" not in root_readme
     for unsupported in (
         "KV&nbsp;Packet",
         "CacheBlend",

@@ -69,12 +69,6 @@ GOVERNED_REGIONS: dict[str, str] = {
     "cachet:vllm-0271-publication-table:latency-estimands": (
         "bbfdfc04a522798c37ab8ba9d994616146439487208d82bc63d1e6cba5d678ec"
     ),
-    "cachet:vllm-0271-publication-table:dataset-scores": (
-        "0675c12aeca09ac0aad798d384dcd941fc953daf74411f0bb4060f5574e68116"
-    ),
-    "cachet:vllm-0271-publication-table:niah-grid": (
-        "0648d280f4daf294d3bbaecc0e4ff67b34a86b3b76fd90b6b7c3bd0f755cc189"
-    ),
     "cachet:vllm-0300-quality-v2": (
         "081a6394342996c8229c2fb167c3f0f7fbbba5f5b8d9dd2af05a1a7b585e92e9"
     ),
