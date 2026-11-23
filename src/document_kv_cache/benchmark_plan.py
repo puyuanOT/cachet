@@ -809,6 +809,12 @@ class BenchmarkPlanConfig:
             and not _uses_release_storage_benchmark_readers(self.storage_benchmark.readers)
         ):
             raise ValueError("release_evidence requires the planned storage_benchmark to use release readers")
+        if (
+            self.release_evidence is not None
+            and self.release_evidence.benchmark_evidence_gate_json is not None
+            and self.evidence_policy != "publication"
+        ):
+            raise ValueError("release_evidence with a benchmark evidence gate requires evidence_policy 'publication'")
         if self.release_bundle is not None and self.release_evidence is None:
             raise ValueError("release_bundle requires release_evidence")
         _validate_strict_v1_release_bundle_plan(self)
@@ -1551,6 +1557,8 @@ def _release_bundle_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         "--output-json",
         bundle_config.output_json,
     )
+    if release_config.benchmark_evidence_gate_json is not None:
+        argv = (*argv, "--benchmark-evidence-gate-json", release_config.benchmark_evidence_gate_json)
     for compatibility_benchmark_json in bundle_config.compatibility_benchmark_jsons:
         argv = (*argv, "--compatibility-benchmark-json", compatibility_benchmark_json)
     for sglang_live_v1_benchmark_json in bundle_config.sglang_live_v1_benchmark_jsons:
@@ -1720,6 +1728,8 @@ def _validate_strict_v1_release_bundle_plan(config: BenchmarkPlanConfig) -> None
     missing = []
     if _release_bundle_preflight_json(config) is None:
         missing.append("preflight sidecar")
+    if config.release_evidence is None or config.release_evidence.benchmark_evidence_gate_json is None:
+        missing.append("benchmark evidence gate sidecar")
     if not bundle_config.plan_execution_jsons:
         missing.append("benchmark plan execution sidecar")
     if (

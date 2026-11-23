@@ -18,6 +18,7 @@ validation.
 ```bash
 python -m document_kv_cache.release_evidence \
   --v1-benchmark-json v1-results.json \
+  --benchmark-evidence-gate-json v1-evidence-gate.json \
   --storage-benchmark-json storage-benchmark.json \
   --engine-probe-json vllm-probe.json \
   --engine-probe-json sglang-probe.json \
@@ -35,6 +36,12 @@ The command exits `0` only when all of the following hold:
   summary-only stubs fail. Baseline rows must use the logical prompt without
   KV transfer params; cache rows may use the logical or runtime prompt mode
   but must attach them.
+- When `--benchmark-evidence-gate-json` is given (the file the benchmark
+  runner wrote with `--evidence-gate-output-json`), it is a passing
+  `document_kv.benchmark_evidence_gate.v1` record under the `publication`
+  policy that equals the V1 record's embedded `evidence_gate` and the gate
+  recomputed from the record's `gate_inputs`. Without it,
+  `benchmark_evidence_gate_ok` is `false`.
 - The storage benchmark has strict Memory + Disk + real UC Volume evidence.
 - Exactly one native probe record and one connector-action descriptor exist
   per backend. Each probe reports the pinned runtime engine version and the
@@ -87,6 +94,7 @@ python -m document_kv_cache.release_bundle \
   --sglang-live-v1-benchmark-json sglang-live-benchmark.json \
   --compatibility-benchmark-json g5-v1-results.json \
   --storage-benchmark-json storage-benchmark.json \
+  --benchmark-evidence-gate-json v1-evidence-gate.json \
   --engine-probe-json vllm-probe.json \
   --engine-probe-json sglang-probe.json \
   --engine-actions-json vllm-connector-actions.json \
@@ -118,14 +126,15 @@ path, bundled path, record type, backend where applicable, package name/version
 for wheel artifacts, size, and SHA-256 for every artifact.
 
 - `--require-complete-v1` refuses to build unless release evidence, preflight,
-  the SGLang live V1 benchmark, vLLM/SGLang probes, connector actions, and
-  launch configs, plan execution, Databricks run-status sidecars, the tested
-  wheel, PR evidence, dependency freshness, the V1 requirements matrix, GitHub
-  governance, repository hygiene, and native-probe factory diagnostics are all
-  present. It needs exactly one run-status sidecar for the benchmark and
-  storage purposes plus one vLLM and one SGLang engine-probe status, split
-  across backend runs or grouped in a matrix run, and the factory diagnostics
-  must report both built-in factories as supported.
+  the benchmark evidence gate, the SGLang live V1 benchmark, vLLM/SGLang
+  probes, connector actions, and launch configs, plan execution, Databricks
+  run-status sidecars, the tested wheel, PR evidence, dependency freshness,
+  the V1 requirements matrix, GitHub governance, repository hygiene, and
+  native-probe factory diagnostics are all present. It needs exactly one
+  run-status sidecar for the benchmark and storage purposes plus one vLLM and
+  one SGLang engine-probe status, split across backend runs or grouped in a
+  matrix run, and the factory diagnostics must report both built-in factories
+  as supported.
 - `--compatibility-benchmark-json` carries non-default V1 evidence such as
   `aws-g5-a10g` runs, validated against the same storage, probe, and action
   sidecars; the g6/L4 release target is rejected in that role.

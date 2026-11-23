@@ -84,6 +84,13 @@
   release PR's evidence sidecar is generated when the bundle is built),
   `docs/release-ops/benchmark-archive/`, and the legacy-migration evidence.
 - SGLang probe handles keep each segment's token contract.
+- Release evidence accepts the benchmark plan's
+  `--benchmark-evidence-gate-json`, so planned release-evidence steps no longer
+  fail on an unknown flag. The gate must pass under the publication policy and
+  match both the benchmark record's embedded gate and a gate recomputed from
+  the record's `gate_inputs`. Strict release bundles require and re-verify it,
+  and benchmark plans that request release evidence must use
+  `--evidence-policy publication`.
 
 ## 0.2.0
 

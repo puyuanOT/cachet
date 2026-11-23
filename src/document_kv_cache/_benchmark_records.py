@@ -4,10 +4,10 @@ import json
 import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import fields, replace
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from document_kv_cache._benchmark_manifest import (
     BENCHMARK_EXPERIMENT_MANIFEST_RECORD_TYPE,
@@ -30,6 +30,7 @@ from document_kv_cache._benchmark_models import (
     _json_object_mapping,
     _validate_non_empty_string,
 )
+from document_kv_cache.artifact_identity import ArtifactIdentity
 from document_kv_cache.benchmarks import (
     CACHE_REUSE_ARM,
     FINAL_ANSWER_EXTRACTED_METADATA_KEY,
@@ -56,6 +57,9 @@ from document_kv_cache.benchmarks import (
 )
 from document_kv_cache.storage import local_path
 from document_kv_cache.workflow import SourceDocument
+
+if TYPE_CHECKING:
+    from document_kv_cache.benchmark_gates import CacheStateAttestation
 
 
 BENCHMARK_RUN_RECORD_TYPE = "document_kv.benchmark_run.v1"
@@ -314,6 +318,47 @@ def benchmark_run_result_to_evidence_record(
         method_registry=method_registry,
         sanitize_evidence=True,
     )
+
+
+def benchmark_gate_inputs_from_record(
+    record: Mapping[str, Any],
+) -> tuple[dict[str, ArtifactIdentity], tuple[CacheStateAttestation, ...]]:
+    """Parse the gate inputs written by ``benchmark_run_result_to_record``."""
+
+    if not isinstance(record, Mapping):
+        raise TypeError("record must be a mapping")
+    if "gate_inputs" not in record:
+        return {}, ()
+    gate_inputs = _record_mapping(record, "gate_inputs")
+    _require_record_keys(
+        gate_inputs,
+        {"artifact_identities", "cache_state_attestations"},
+        "gate_inputs",
+    )
+    identities: dict[str, ArtifactIdentity] = {}
+    for index, raw_identity in enumerate(
+        _record_sequence(gate_inputs, "artifact_identities")
+    ):
+        identity = ArtifactIdentity.from_record(
+            _record_mapping_value(raw_identity, f"artifact_identities[{index}]")
+        )
+        if identity.artifact_id in identities:
+            raise ValueError(
+                f"gate_inputs has duplicate artifact identity {identity.artifact_id}"
+            )
+        identities[identity.artifact_id] = identity
+    sanitized = record.get("evidence_sanitized") is True
+    attestations = tuple(
+        _cache_state_attestation_from_record(
+            raw_attestation,
+            label=f"cache_state_attestations[{index}]",
+            sanitized=sanitized,
+        )
+        for index, raw_attestation in enumerate(
+            _record_sequence(gate_inputs, "cache_state_attestations")
+        )
+    )
+    return identities, attestations
 
 
 def _arm_runtime_environment_from_record(
@@ -1566,6 +1611,34 @@ def _cache_state_attestation_to_record(
             raise ValueError("cache-state attestation request_id must be non-empty")
         materialized["request_id"] = _sanitized_identifier(request_id)
     return materialized
+
+
+def _cache_state_attestation_from_record(
+    value: Any,
+    *,
+    label: str,
+    sanitized: bool,
+) -> CacheStateAttestation:
+    from document_kv_cache.benchmark_gates import (
+        CACHE_STATE_ATTESTATION_RECORD_TYPE,
+        CacheStateAttestation,
+    )
+
+    record = _record_mapping_value(value, label)
+    field_names = {field.name for field in fields(CacheStateAttestation)}
+    record_keys = field_names | {"record_type", "cold_read_attested"}
+    _require_record_keys(record, record_keys, label)
+    missing = sorted(record_keys.difference(record))
+    if missing:
+        raise ValueError(f"{label} is missing fields: {missing}")
+    if record["record_type"] != CACHE_STATE_ATTESTATION_RECORD_TYPE:
+        raise ValueError(f"{label} has unsupported record_type")
+    attestation = CacheStateAttestation(**{name: record[name] for name in field_names})
+    if record["cold_read_attested"] is not attestation.cold_read_attested:
+        raise ValueError(f"{label} cold_read_attested contradicts its observed state")
+    if sanitized and not _is_sha256_digest(attestation.request_id):
+        raise ValueError(f"{label} request_id must be a SHA-256 digest in sanitized evidence")
+    return attestation
 
 
 def _sanitized_gate_result(result: BenchmarkRunResult) -> BenchmarkRunResult:
