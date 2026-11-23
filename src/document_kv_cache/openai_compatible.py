@@ -22,6 +22,7 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
 )
+from document_kv_cache.quality_v2 import QUALITY_V2_MAX_TOKENS
 
 __all__ = [
     "TokenCounter",
@@ -97,7 +98,7 @@ class OpenAICompatibleEngineConfig:
     endpoint: str | None = None
     api_key: str | None = None
     timeout_seconds: float = 120.0
-    max_tokens: int = 128
+    max_tokens: int = QUALITY_V2_MAX_TOKENS
     temperature: float = 0.0
     stream: bool = True
     include_usage: bool = True

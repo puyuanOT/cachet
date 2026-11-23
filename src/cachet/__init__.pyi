@@ -247,8 +247,6 @@ from document_kv_cache.dependency_freshness import (
 )
 
 from document_kv_cache.dataset_prep import (
-    DEFAULT_NIAH_QUERY as DEFAULT_NIAH_QUERY,
-    build_niah_record as build_niah_record,
     convert_v1_jsonl as convert_v1_jsonl,
     normalize_v1_record as normalize_v1_record,
     write_v1_jsonl as write_v1_jsonl,
@@ -360,9 +358,7 @@ from document_kv_cache.engine_protocol import (
 )
 
 from document_kv_cache.live_server import (
-    DEFAULT_LIVE_CHECK_PROMPT_FORMAT as DEFAULT_LIVE_CHECK_PROMPT_FORMAT,
     LIVE_CHECK_SUITE_ID as LIVE_CHECK_SUITE_ID,
-    LiveCheckPromptFormat as LiveCheckPromptFormat,
     LiveServerCheckConfig as LiveServerCheckConfig,
     LiveServerCheckResult as LiveServerCheckResult,
     build_live_server_check_request as build_live_server_check_request,
@@ -372,7 +368,6 @@ from document_kv_cache.live_server import (
 
 from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY as DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY,
-    DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT as DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE as DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE as DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
     DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM as DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM,

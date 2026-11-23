@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from document_kv_cache._benchmark_records import benchmark_gate_inputs_from_record
-from document_kv_cache.artifact_identity import ArtifactIdentity, canonical_json_sha256
+from document_kv_cache.artifact_identity import ArtifactIdentity
 from document_kv_cache.benchmark_gates import (
     BenchmarkPublicationGateConfig,
     CacheStateAttestation,
@@ -36,18 +36,14 @@ from document_kv_cache.benchmark_statistics import (
     paired_benchmark_statistics_to_record,
 )
 from document_kv_cache.benchmarks import (
-    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
     FINAL_ANSWER_EXTRACTED_METADATA_KEY,
     FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY,
     FINAL_ANSWER_NO_EXTRACTION_VALUE,
-    FINAL_ANSWER_PARSER_DIGEST,
     FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY,
-    FINAL_ANSWER_PARSER_ID,
     FINAL_ANSWER_PARSER_ID_METADATA_KEY,
-    FINAL_ANSWER_PARSER_PLUGIN_PATH,
+    FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY,
     FINAL_ANSWER_PARSER_STATUS_METADATA_KEY,
     FINAL_ANSWER_PARSER_VALID_METADATA_KEY,
-    FINAL_ANSWER_PARSER_VERSION,
     FINAL_ANSWER_PARSER_VERSION_METADATA_KEY,
     NIAH_CELL_IDS,
     DOCUMENT_KV_ARTIFACT_ID_PARAM,
@@ -62,11 +58,11 @@ from document_kv_cache.benchmarks import (
     DatasetScorer,
     DatasetScorerRegistry,
     DatasetMetricSpec,
+    FinalAnswerExtraction,
     InferenceMeasurement,
     LatencySummary,
     baseline_prefill_arm,
     method_benchmark_arm,
-    default_dataset_scorer_registry,
     diagnostic_answer_scores,
 )
 from document_kv_cache.quality_v2 import (
@@ -75,6 +71,7 @@ from document_kv_cache.quality_v2 import (
     QUALITY_V2_PARSER_PLUGIN_PATH,
     QUALITY_V2_PARSER_VERSION,
     QUALITY_V2_PROMPT_TEMPLATE_VERSION,
+    extract_first_final_answer,
     quality_v2_scorer_registry,
 )
 from document_kv_cache.workflow import SourceDocument
@@ -442,7 +439,7 @@ def test_complete_niah_publication_requires_all_nine_grid_cells() -> None:
         ),
         {baseline_arm.arm_id: _ScopedEngine()},
         arms=(baseline_arm,),
-        scorer_registry=default_dataset_scorer_registry(),
+        scorer_registry=quality_v2_scorer_registry(),
         manifest_context=BenchmarkManifestContext(
             model_revision="model-revision",
             canonical_model_id="test-model",
@@ -727,7 +724,7 @@ def test_sanitized_niah_evidence_keeps_grid_cells_for_coverage_checks() -> None:
         ),
         {baseline_arm.arm_id: _ScopedEngine()},
         arms=(baseline_arm,),
-        scorer_registry=default_dataset_scorer_registry(),
+        scorer_registry=quality_v2_scorer_registry(),
         manifest_context=BenchmarkManifestContext(
             complete_dataset_split=True,
             measurement_scopes=("quality",),
@@ -798,13 +795,6 @@ QUALITY_V2_PARSER_IDENTITY = {
 }
 
 
-def _quality_v2_identity() -> ArtifactIdentity:
-    return replace(
-        artifact_identity(),
-        prompt_template_version=QUALITY_V2_PROMPT_TEMPLATE_VERSION,
-    )
-
-
 def _quality_v2_result(identity: ArtifactIdentity) -> BenchmarkRunResult:
     return scoped_benchmark_result(
         identity,
@@ -814,7 +804,36 @@ def _quality_v2_result(identity: ArtifactIdentity) -> BenchmarkRunResult:
     )
 
 
-def test_v1_scorer_manifest_record_omits_parser_identity_and_keeps_its_digest() -> None:
+UNREGISTERED_PARSER_IDENTITY = {
+    "parser_id": "example.first_final_answer",
+    "parser_version": "1",
+    "parser_plugin_path": "tests.test_benchmark_gates:unregistered_final_answer",
+    "parser_digest": "e" * 64,
+}
+
+
+def unregistered_final_answer(output_text: str) -> FinalAnswerExtraction:
+    return replace(extract_first_final_answer(output_text), **UNREGISTERED_PARSER_IDENTITY)
+
+
+def _unregistered_parser_result(identity: ArtifactIdentity) -> BenchmarkRunResult:
+    scorer = replace(
+        quality_v2_scorer_registry().get("hotpotqa"),
+        answer_parser_function=unregistered_final_answer,
+        **{
+            f"answer_{field_name}": value
+            for field_name, value in UNREGISTERED_PARSER_IDENTITY.items()
+        },
+    )
+    return scoped_benchmark_result(
+        identity,
+        scopes=("quality",),
+        with_answers=True,
+        scorers=DatasetScorerRegistry().register("hotpotqa", scorer),
+    )
+
+
+def test_scorer_manifest_record_carries_every_declared_parser_identity() -> None:
     result = scoped_benchmark_result(
         artifact_identity(),
         scopes=("quality",),
@@ -822,23 +841,25 @@ def test_v1_scorer_manifest_record_omits_parser_identity_and_keeps_its_digest() 
     )
     manifest = result.experiment_manifest
     assert manifest is not None
+    declared = {
+        measurement.metadata[FINAL_ANSWER_PARSER_ID_METADATA_KEY]
+        for measurement in result.measurements
+    }
 
     record = benchmark_experiment_manifest_to_record(manifest)
 
-    assert all(scorer.answer_parser_id == "" for scorer in manifest.scorer_identities)
-    assert not any(
-        key.startswith("answer_parser_")
-        for scorer in record["logical_workload"]["scorers"]
-        for key in scorer
+    assert [scorer.answer_parser_id for scorer in manifest.scorer_identities] == sorted(
+        declared
     )
-    assert canonical_json_sha256(record) == (
-        "1fa1bd8195769154f11b6118000553c292f24ce3e60926481f57e20a10722fa1"
-    )
+    assert [
+        scorer_record["answer_parser_id"]
+        for scorer_record in record["logical_workload"]["scorers"]
+    ] == sorted(declared)
     assert benchmark_experiment_manifest_from_record(record) == manifest
 
 
 def test_declared_scorer_parser_identity_is_recorded_in_the_manifest() -> None:
-    result = _quality_v2_result(_quality_v2_identity())
+    result = _quality_v2_result(artifact_identity())
     manifest = result.experiment_manifest
     assert manifest is not None
 
@@ -869,7 +890,7 @@ def test_declared_scorer_parser_identity_is_recorded_in_the_manifest() -> None:
 def test_scorer_manifest_rejects_partial_or_malformed_parser_identity(
     changes: dict[str, str],
 ) -> None:
-    result = _quality_v2_result(_quality_v2_identity())
+    result = _quality_v2_result(artifact_identity())
     assert result.experiment_manifest is not None
     (scorer,) = result.experiment_manifest.scorer_identities
     fields = {
@@ -882,7 +903,7 @@ def test_scorer_manifest_rejects_partial_or_malformed_parser_identity(
 
 
 def test_publication_gate_accepts_declared_quality_v2_parser_raw_and_sanitized() -> None:
-    identity = _quality_v2_identity()
+    identity = artifact_identity()
     result = _quality_v2_result(identity)
 
     gate = evaluate_benchmark_evidence_gate(
@@ -953,12 +974,12 @@ def test_publication_gate_accepts_declared_quality_v2_parser_raw_and_sanitized()
         ),
     ],
 )
-def test_publication_gate_rejects_tampered_declared_parser_metadata(
+def test_publication_gate_rejects_tampered_unregistered_parser_metadata(
     changes: dict[str, str | None],
     issue_fragment: str,
 ) -> None:
-    identity = _quality_v2_identity()
-    original = _quality_v2_result(identity)
+    identity = artifact_identity()
+    original = _unregistered_parser_result(identity)
     first = original.measurements[0]
     metadata = dict(first.metadata)
     for key, value in changes.items():
@@ -971,41 +992,33 @@ def test_publication_gate_rejects_tampered_declared_parser_metadata(
         measurements=(replace(first, metadata=metadata), *original.measurements[1:]),
     )
 
+    original_gate = evaluate_benchmark_evidence_gate(
+        original,
+        policy="publication",
+        artifact_identities={identity.artifact_id: identity},
+    )
     gate = evaluate_benchmark_evidence_gate(
         result,
         policy="publication",
         artifact_identities={identity.artifact_id: identity},
     )
 
+    assert original_gate.ok, original_gate.issues
     assert not gate.ok
     assert any(issue_fragment in issue for issue in gate.issues), gate.issues
 
 
-def test_publication_gate_reextracts_when_manifest_declares_the_v1_parser() -> None:
+def test_publication_gate_reextracts_raw_output_with_the_declared_parser() -> None:
     identity = artifact_identity()
-    original = scoped_benchmark_result(
-        identity,
-        scopes=("quality",),
-        with_answers=True,
-    )
-    assert original.experiment_manifest is not None
-    (scorer,) = original.experiment_manifest.scorer_identities
+    original = _quality_v2_result(identity)
     first = original.measurements[0]
+    echoed = (
+        "Required response form: <final_answer>answer</final_answer>\n"
+        "<final_answer>London</final_answer>"
+    )
     result = replace(
         original,
-        experiment_manifest=replace(
-            original.experiment_manifest,
-            scorer_identities=(
-                replace(
-                    scorer,
-                    answer_parser_id=FINAL_ANSWER_PARSER_ID,
-                    answer_parser_version=FINAL_ANSWER_PARSER_VERSION,
-                    answer_parser_plugin_path=FINAL_ANSWER_PARSER_PLUGIN_PATH,
-                    answer_parser_digest=FINAL_ANSWER_PARSER_DIGEST,
-                ),
-            ),
-        ),
-        measurements=(replace(first, output_text=""), *original.measurements[1:]),
+        measurements=(replace(first, output_text=echoed), *original.measurements[1:]),
     )
 
     gate = evaluate_benchmark_evidence_gate(
@@ -1018,8 +1031,8 @@ def test_publication_gate_reextracts_when_manifest_declares_the_v1_parser() -> N
     assert any("extraction cannot be reproduced" in issue for issue in gate.issues)
 
 
-def test_v1_scorer_manifest_rejects_measurements_from_an_undeclared_parser() -> None:
-    identity = _quality_v2_identity()
+def test_publication_gate_rejects_a_scorer_without_a_parser_identity() -> None:
+    identity = artifact_identity()
     original = _quality_v2_result(identity)
     assert original.experiment_manifest is not None
     (scorer,) = original.experiment_manifest.scorer_identities
@@ -1044,9 +1057,40 @@ def test_v1_scorer_manifest_rejects_measurements_from_an_undeclared_parser() -> 
 
     assert not gate.ok
     assert any(
+        "scorer declares no final-answer parser identity" in issue
+        for issue in gate.issues
+    )
+
+
+def test_publication_gate_rejects_measurements_from_another_parser() -> None:
+    identity = artifact_identity()
+    original = _quality_v2_result(identity)
+    other_parser = {
+        FINAL_ANSWER_PARSER_ID_METADATA_KEY: "example.other_final_answer",
+        FINAL_ANSWER_PARSER_VERSION_METADATA_KEY: "1",
+        FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY: "example.parsers:other_final_answer",
+        FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY: "0" * 64,
+    }
+    result = replace(
+        original,
+        measurements=tuple(
+            replace(measurement, metadata={**measurement.metadata, **other_parser})
+            for measurement in original.measurements
+        ),
+    )
+
+    gate = evaluate_benchmark_evidence_gate(
+        result,
+        policy="publication",
+        artifact_identities={identity.artifact_id: identity},
+    )
+
+    assert not gate.ok
+    assert any(
         "missing or mixed final-answer parser identity" in issue
         for issue in gate.issues
     )
+    assert any("extraction cannot be reproduced" in issue for issue in gate.issues)
 
 
 @pytest.mark.parametrize(
@@ -1283,6 +1327,7 @@ def test_publication_gates_official_metrics_and_collapses_quality_repeats() -> N
         score_function=official_score,
         publication_approved=True,
         plugin_path="tests.test_benchmark_gates:official_score",
+        **_quality_v2_prompt_and_parser(),
     )
     result = run_benchmark_suite(
         suite,
@@ -1353,7 +1398,7 @@ def test_publication_gates_official_metrics_and_collapses_quality_repeats() -> N
     assert paired.quality_score_deltas["official_f1"].paired_samples == 4
 
 
-def test_multi_document_vanilla_quality_regression_is_reported_not_gated() -> None:
+def test_multi_document_vanilla_diagnostic_quality_regression_is_reported_not_gated() -> None:
     identity = artifact_identity()
     baseline_arm = baseline_prefill_arm()
     cache_arm = method_benchmark_arm(
@@ -1363,7 +1408,7 @@ def test_multi_document_vanilla_quality_regression_is_reported_not_gated() -> No
     examples = tuple(
         BenchmarkExample(
             example_id=f"multi-document-{index}",
-            dataset="hotpotqa",
+            dataset="biography",
             documents=(
                 SourceDocument.from_text(
                     document_id=f"bridge-{index}-a",
@@ -1434,14 +1479,14 @@ def test_multi_document_vanilla_quality_regression_is_reported_not_gated() -> No
         BenchmarkSuite(
             suite_id="multi-document-quality-regression",
             examples=examples,
-            datasets=("hotpotqa",),
+            datasets=("biography",),
         ),
         {
             baseline_arm.arm_id: _QualityEngine(),
             cache_arm.arm_id: _QualityEngine(),
         },
         arms=(baseline_arm, cache_arm),
-        scorer_registry=default_dataset_scorer_registry(),
+        scorer_registry=quality_v2_scorer_registry(),
         manifest_context=context,
         evidence_policy="publication",
     )
@@ -1931,6 +1976,23 @@ class _ScopedEngine:
         )
 
 
+def _quality_v2_prompt_and_parser() -> dict:
+    scorer = quality_v2_scorer_registry().get("hotpotqa")
+    return {
+        field_name: getattr(scorer, field_name)
+        for field_name in (
+            "prompt_function",
+            "prompt_plugin_path",
+            "prompt_template_version",
+            "answer_parser_function",
+            "answer_parser_id",
+            "answer_parser_version",
+            "answer_parser_plugin_path",
+            "answer_parser_digest",
+        )
+    }
+
+
 def scoped_benchmark_result(
     identity: ArtifactIdentity,
     *,
@@ -1977,6 +2039,7 @@ def scoped_benchmark_result(
             score_function=diagnostic_answer_scores,
             publication_approved=True,
             plugin_path="tests.test_benchmark_gates:diagnostic_answer_scores",
+            **_quality_v2_prompt_and_parser(),
         )
         scorers = DatasetScorerRegistry().register("hotpotqa", scorer)
     context = BenchmarkManifestContext(
@@ -2047,7 +2110,7 @@ def artifact_identity() -> ArtifactIdentity:
         tokenizer_id="qwen3:4b-instruct",
         tokenizer_revision="tokenizer-revision",
         lora_id="none",
-        prompt_template_version=DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+        prompt_template_version=QUALITY_V2_PROMPT_TEMPLATE_VERSION,
         layout_version="v1",
         kv_dtype="float16",
         block_size=16,

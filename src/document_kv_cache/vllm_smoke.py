@@ -49,6 +49,7 @@ from document_kv_cache.engine_probe import _validate_local_payload_uri
 from document_kv_cache.artifact_identity import method_config_digest as compute_method_config_digest
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
+from document_kv_cache.quality_v2 import QUALITY_V2_MAX_TOKENS
 from document_kv_cache.storage import local_path
 from document_kv_cache.serving_env import (
     FASTAPI_CONSTRAINT,
@@ -172,7 +173,7 @@ class VLLMSmokeBenchmarkConfig:
 
     benchmark_id: str
     output_dir: Path
-    max_tokens: int = 32
+    max_tokens: int = QUALITY_V2_MAX_TOKENS
     timeout_seconds: float = 240.0
     import_probe_timeout_seconds: float = 180.0
     server_start_timeout_seconds: float = 480.0
@@ -1619,7 +1620,7 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     parser = argparse.ArgumentParser(description="Run a Qwen3/vLLM V1 benchmark smoke on Databricks g5/g6.")
     parser.add_argument("--benchmark-id", required=True)
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--max-tokens", type=int, default=32)
+    parser.add_argument("--max-tokens", type=int, default=QUALITY_V2_MAX_TOKENS)
     parser.add_argument("--timeout-seconds", type=float, default=240.0)
     parser.add_argument("--import-probe-timeout-seconds", type=float, default=180.0)
     parser.add_argument("--server-start-timeout-seconds", type=float, default=480.0)

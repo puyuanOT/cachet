@@ -1,11 +1,11 @@
 import json
+import random
 
 import pytest
 
 from document_kv_cache.benchmark_runner import load_benchmark_jsonl
 from document_kv_cache.benchmarks import DOCUMENT_KV_REQUEST_ID_PARAM
 from document_kv_cache.dataset_prep import (
-    build_niah_record,
     convert_v1_jsonl,
     main,
     normalize_v1_record,
@@ -13,6 +13,21 @@ from document_kv_cache.dataset_prep import (
     redact_biography_document_text,
     write_v1_jsonl,
 )
+from document_kv_cache.quality_v2 import build_quality_v2_niah_records
+
+
+def _quality_v2_niah_records(item_count=9):
+    rng = random.Random(7)
+    words = [f"w{index}" for index in range(500)]
+    paragraphs = [
+        f"P{index} " + " ".join(rng.choice(words) for _ in range(rng.randrange(40, 160)))
+        for index in range(1200)
+    ]
+    return build_quality_v2_niah_records(
+        paragraphs,
+        count_tokens=lambda text: len(text.split()),
+        item_count=item_count,
+    )
 
 
 def test_normalize_biography_builds_query_answer_and_document_from_subject_fields():
@@ -152,18 +167,34 @@ def test_normalize_and_write_musique_preserves_primary_answer_and_aliases(tmp_pa
     assert loaded[0].references == ("New York City", "NYC", "New York")
 
 
-def test_build_niah_record_inserts_needle_when_missing():
-    record = build_niah_record(
-        example_id="needle-1",
-        haystack_text="A long passage with many irrelevant facts.",
-        needle_answer="blue lantern",
-        needle_text="The secret code is blue lantern.",
-    )
+def test_normalize_niah_keeps_quality_v2_records_unchanged():
+    records = _quality_v2_niah_records()
 
-    assert record["dataset"] == "niah"
-    assert record["expected_answer"] == "blue lantern"
-    assert "The secret code is blue lantern." in record["documents"][0]["text"]
-    assert record["metadata"]["needle_text"] == "The secret code is blue lantern."
+    assert [
+        normalize_v1_record(record, dataset="niah", line_number=index)
+        for index, record in enumerate(records, start=1)
+    ] == records
+
+
+def test_normalize_niah_rejects_rows_without_documents_or_query():
+    with pytest.raises(ValueError, match="Record must include one of"):
+        normalize_v1_record(
+            {
+                "example_id": "needle-1",
+                "haystack_text": "A long passage with many irrelevant facts.",
+                "needle_answer": "blue lantern",
+            },
+            dataset="niah",
+        )
+    with pytest.raises(ValueError, match="Missing required field: query"):
+        normalize_v1_record(
+            {
+                "example_id": "needle-1",
+                "documents": [{"document_id": "haystack", "text": "The code is 1234567."}],
+                "expected_answer": "1234567",
+            },
+            dataset="niah",
+        )
 
 
 def test_convert_v1_jsonl_writes_loadable_canonical_rows(tmp_path):
@@ -417,25 +448,35 @@ def test_main_converts_source_jsonl(tmp_path):
     assert loaded[0].expected_answer == "Grace Hopper"
 
 
-def test_main_generates_synthetic_niah(tmp_path):
+def test_main_prepares_staged_quality_v2_niah_records(tmp_path):
+    records = _quality_v2_niah_records()
+    input_path = tmp_path / "raw-niah.jsonl"
+    write_v1_jsonl(records, input_path)
     output_path = tmp_path / "niah.jsonl"
 
     exit_code = main(
         [
             "--dataset",
             "niah",
+            "--input-jsonl",
+            str(input_path),
             "--output-jsonl",
             str(output_path),
-            "--haystack-text",
-            "irrelevant facts",
-            "--needle-answer",
-            "blue lantern",
-            "--count",
-            "2",
         ]
     )
 
     assert exit_code == 0
+    assert [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()] == records
     loaded = load_benchmark_jsonl(output_path, dataset="niah", require_dataset=True)
-    assert len(loaded) == 2
-    assert all(example.expected_answer == "blue lantern" for example in loaded)
+    assert [example.metadata["niah_cell_id"] for example in loaded] == [
+        record["metadata"]["niah_cell_id"] for record in records
+    ]
+
+
+def test_main_requires_input_jsonl(tmp_path, capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--dataset", "niah", "--output-jsonl", str(tmp_path / "niah.jsonl")])
+
+    assert exit_info.value.code == 2
+    assert "--input-jsonl" in capsys.readouterr().err
+    assert not (tmp_path / "niah.jsonl").exists()

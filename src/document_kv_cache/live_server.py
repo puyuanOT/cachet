@@ -7,7 +7,7 @@ import math
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 from document_kv_cache.benchmark_runner import (
     BenchmarkEngine,
@@ -18,7 +18,6 @@ from document_kv_cache.benchmarks import (
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
     BenchmarkExample,
-    BenchmarkPromptParts,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
@@ -42,13 +41,17 @@ from document_kv_cache.openai_compatible import (
     PromptTextMode,
     PromptTokenAccounting,
 )
+from document_kv_cache.quality_v2 import (
+    QUALITY_V2_MAX_TOKENS,
+    _CHAT_ASSISTANT_OPEN,
+    _CHAT_USER_OPEN,
+    extract_first_final_answer,
+)
 from document_kv_cache.workflow import SourceDocument
 
 __all__ = [
     "LIVE_CHECK_SUITE_ID",
     "DEFAULT_LIVE_CHECK_ANSWER",
-    "DEFAULT_LIVE_CHECK_PROMPT_FORMAT",
-    "LiveCheckPromptFormat",
     "LiveServerCheckConfig",
     "LiveServerCheckResult",
     "build_live_server_check_request",
@@ -59,12 +62,6 @@ __all__ = [
 
 LIVE_CHECK_SUITE_ID = "openai-compatible-live-check"
 DEFAULT_LIVE_CHECK_ANSWER = "otkv7391"
-LiveCheckPromptFormat = Literal["plain", "qwen3_chat"]
-DEFAULT_LIVE_CHECK_PROMPT_FORMAT: LiveCheckPromptFormat = "plain"
-_QWEN3_CHAT_SYSTEM_PROMPT = (
-    "You are a precise benchmark extraction assistant. "
-    "Return only the requested answer, with no explanation."
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,11 +75,10 @@ class LiveServerCheckConfig:
     kv_transfer_params_transport: KVTransferParamsTransport = "top_level"
     request_mode: OpenAICompatibleRequestMode = "completion"
     stream: bool = True
-    max_tokens: int = 32
+    max_tokens: int = QUALITY_V2_MAX_TOKENS
     temperature: float = 0.0
     timeout_seconds: float = 120.0
     expected_answer: str = DEFAULT_LIVE_CHECK_ANSWER
-    prompt_format: LiveCheckPromptFormat = DEFAULT_LIVE_CHECK_PROMPT_FORMAT
     api_key: str | None = None
     extra_body: Mapping[str, Any] = field(default_factory=dict)
     kv_transfer_params: Mapping[str, Any] = field(default_factory=dict)
@@ -109,7 +105,6 @@ class LiveServerCheckConfig:
             )
         if self.request_mode not in {"completion", "chat"}:
             raise ValueError("request_mode must be 'completion' or 'chat'")
-        _validate_live_check_prompt_format(self.prompt_format)
         if not isinstance(self.kv_transfer_params, Mapping):
             raise ValueError("kv_transfer_params must be a mapping")
         object.__setattr__(self, "kv_transfer_params", dict(self.kv_transfer_params))
@@ -123,7 +118,6 @@ class LiveServerCheckResult:
     generation: BenchmarkGeneration
     prompt_text_mode: PromptTextMode
     request_mode: OpenAICompatibleRequestMode
-    prompt_format: LiveCheckPromptFormat
     answer_found: bool
 
     @property
@@ -141,7 +135,6 @@ class LiveServerCheckResult:
             "request_id": self.request.request_id,
             "prompt_text_mode": self.prompt_text_mode,
             "request_mode": self.request_mode,
-            "prompt_format": self.prompt_format,
             "kv_transfer_params_present": bool(self.request.kv_transfer_params),
             "kv_transfer_param_keys": sorted(self.request.kv_transfer_params),
             "logical_prompt_chars": len(self.request.logical_prompt_text),
@@ -165,10 +158,8 @@ def build_live_server_check_request(
     hardware_target: str = DEFAULT_HARDWARE_TARGET,
     use_cache_arm: bool = False,
     expected_answer: str = DEFAULT_LIVE_CHECK_ANSWER,
-    prompt_format: LiveCheckPromptFormat = DEFAULT_LIVE_CHECK_PROMPT_FORMAT,
     kv_transfer_params: Mapping[str, Any] | None = None,
 ) -> BenchmarkEngineRequest:
-    _validate_live_check_prompt_format(prompt_format)
     params = {} if kv_transfer_params is None else dict(kv_transfer_params)
     if params and not use_cache_arm:
         raise ValueError("kv_transfer_params require use_cache_arm=True")
@@ -193,14 +184,13 @@ def build_live_server_check_request(
     )
     arm = document_kv_cache_arm() if use_cache_arm else baseline_prefill_arm()
     request_params = example.kv_transfer_params if arm.uses_cache else {}
-    prompt_parts = _live_check_prompt_parts(example, prompt_format=prompt_format)
     return BenchmarkEngineRequest(
         suite_id=LIVE_CHECK_SUITE_ID,
         model_id=model_id,
         hardware_target=hardware_target,
         example=example,
         arm=arm,
-        prompt_parts=prompt_parts,
+        prompt_parts=build_prompt_parts(example),
         request_id=_request_id_from_kv_transfer_params(request_params),
         kv_transfer_params=request_params,
     )
@@ -272,9 +262,6 @@ def run_openai_compatible_live_check(
         hardware_target=config.hardware_target,
         use_cache_arm=config.use_cache_arm,
         expected_answer=config.expected_answer,
-        prompt_format=_live_check_request_prompt_format(
-            config.prompt_format, request_mode=config.request_mode
-        ),
         kv_transfer_params=config.kv_transfer_params,
     )
     active_engine = engine or OpenAICompatibleCompletionEngine(
@@ -300,8 +287,9 @@ def run_openai_compatible_live_check(
         generation=generation,
         prompt_text_mode=config.prompt_text_mode,
         request_mode=config.request_mode,
-        prompt_format=config.prompt_format,
-        answer_found=answer_found(generation.output_text, config.expected_answer),
+        answer_found=_live_check_answer_found(
+            generation.output_text, config.expected_answer
+        ),
     )
 
 
@@ -317,13 +305,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--model-id", default=DEFAULT_V1_MODEL_ID)
     parser.add_argument("--hardware-target", default=DEFAULT_HARDWARE_TARGET)
     parser.add_argument("--api-key")
-    parser.add_argument("--max-tokens", type=int, default=32)
+    parser.add_argument("--max-tokens", type=int, default=QUALITY_V2_MAX_TOKENS)
     parser.add_argument("--timeout-seconds", type=float, default=120.0)
-    parser.add_argument(
-        "--prompt-format",
-        choices=("plain", "qwen3_chat"),
-        default=DEFAULT_LIVE_CHECK_PROMPT_FORMAT,
-    )
     parser.add_argument(
         "--request-mode", choices=("completion", "chat"), default="completion"
     )
@@ -418,7 +401,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 timeout_seconds=args.timeout_seconds,
                 stream=not args.no_stream,
                 use_cache_arm=args.cache_arm,
-                prompt_format=args.prompt_format,
                 request_mode=args.request_mode,
                 prompt_text_mode="runtime" if args.runtime_prompt else "logical",
                 prompt_token_accounting=(
@@ -454,20 +436,23 @@ def _request_id_from_kv_transfer_params(params: Mapping[str, Any]) -> str | None
     return None
 
 
-def _live_check_request_prompt_format(
-    prompt_format: LiveCheckPromptFormat,
-    *,
-    request_mode: OpenAICompatibleRequestMode,
-) -> LiveCheckPromptFormat:
-    if request_mode == "chat" and prompt_format == "qwen3_chat":
-        return "plain"
-    return prompt_format
+def _live_check_answer_found(output_text: str, expected_answer: str | None) -> bool:
+    """Whether the answer the Quality v2 parser extracts contains ``expected_answer``.
+
+    An output the parser rejects never counts, so a model that only echoes the
+    needle from the document text outside a ``<final_answer>`` block fails.
+    """
+
+    if expected_answer is None:
+        return False
+    extraction = extract_first_final_answer(output_text)
+    return extraction.valid and answer_found(extraction.extracted_answer, expected_answer)
 
 
 def _live_check_chat_messages_factory(
     config: LiveServerCheckConfig,
 ) -> Callable[[BenchmarkEngineRequest], Sequence[Mapping[str, Any]]] | None:
-    if config.request_mode != "chat" or config.prompt_format != "qwen3_chat":
+    if config.request_mode != "chat":
         return None
 
     def factory(request: BenchmarkEngineRequest) -> Sequence[Mapping[str, Any]]:
@@ -488,39 +473,13 @@ def _live_check_chat_messages(
         if prompt_text_mode == "runtime"
         else request.logical_prompt_text
     )
-    return (
-        {"role": "system", "content": _QWEN3_CHAT_SYSTEM_PROMPT},
-        {"role": "user", "content": content},
-    )
+    return ({"role": "user", "content": _qwen3_chat_user_content(content)},)
 
 
-def _live_check_prompt_parts(
-    example: BenchmarkExample,
-    *,
-    prompt_format: LiveCheckPromptFormat,
-) -> BenchmarkPromptParts:
-    parts = build_prompt_parts(example)
-    if prompt_format == "plain":
-        return parts
-    if prompt_format == "qwen3_chat":
-        return BenchmarkPromptParts(
-            system_prompt=(
-                "<|im_start|>system\n"
-                "You are a precise benchmark extraction assistant. "
-                "Return only the requested answer, with no explanation.\n"
-                "<|im_end|>\n"
-                "<|im_start|>user\n"
-                f"{parts.system_prompt}"
-            ),
-            document_context=parts.document_context,
-            user_prompt=f"{parts.user_prompt}\n<|im_end|>\n<|im_start|>assistant\n",
-        )
-    raise ValueError(f"unsupported live check prompt_format {prompt_format!r}")
+def _qwen3_chat_user_content(prompt_text: str) -> str:
+    """Return the Quality v2 user turn without the markers a chat template re-adds."""
 
-
-def _validate_live_check_prompt_format(value: object) -> None:
-    if value not in {"plain", "qwen3_chat"}:
-        raise ValueError("prompt_format must be 'plain' or 'qwen3_chat'")
+    return prompt_text.removeprefix(_CHAT_USER_OPEN).removesuffix(_CHAT_ASSISTANT_OPEN)
 
 
 def _resolve_request_id(request_id: str | None, record: Mapping[str, Any]) -> str:

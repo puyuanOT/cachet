@@ -1,19 +1,63 @@
 import json
+import random
 import zipfile
 
 import pytest
 
+from document_kv_cache import dataset_prep
 from document_kv_cache.benchmark_dataset_sources import (
     DatasetSourceStagingConfig,
+    _niah_haystack_paragraphs,
     stage_full_benchmark_datasets,
     stage_hotpotqa_parquet,
     stage_musique_jsonl,
     stage_niah_jsonl,
     stage_wikibio_zip,
 )
-from document_kv_cache.benchmark_runner import load_benchmark_jsonl
-from document_kv_cache.benchmarks import format_document_context
+from document_kv_cache.benchmark_plan import (
+    BenchmarkDatasetPath,
+    BenchmarkPlanConfig,
+    build_v1_benchmark_plan,
+)
+from document_kv_cache.benchmark_runner import (
+    BenchmarkGeneration,
+    load_benchmark_jsonl,
+    load_v1_jsonl_suite,
+    run_benchmark_suite,
+)
+from document_kv_cache.benchmarks import (
+    BASELINE_PREFILL_ARM,
+    CACHE_REUSE_ARM,
+    format_document_context,
+)
 from document_kv_cache.dataset_prep import opaque_biography_example_id
+from document_kv_cache.quality_v2 import (
+    QUALITY_V2_NIAH_SEED,
+    build_quality_v2_niah_records,
+    quality_v2_scorer_registry,
+)
+
+
+def _paragraphs(count=1200):
+    rng = random.Random(7)
+    words = [f"w{index}" for index in range(500)]
+    return [
+        f"P{index} " + " ".join(rng.choice(words) for _ in range(rng.randrange(40, 160)))
+        for index in range(count)
+    ]
+
+
+def _word_count(text):
+    return len(text.split())
+
+
+def _haystack_paragraphs(record):
+    needle = record["metadata"]["needle_text"]
+    return [
+        paragraph
+        for paragraph in record["documents"][0]["text"].split("\n\n")
+        if paragraph != needle
+    ]
 
 
 def test_stage_hotpotqa_parquet_writes_canonical_records(tmp_path):
@@ -133,22 +177,129 @@ def test_stage_wikibio_zip_uses_title_as_expected_answer(tmp_path):
     assert f'title="{opaque_id}-doc-0"' in rendered_header
 
 
-def test_stage_niah_jsonl_records_synthetic_grid_metadata(tmp_path):
+def test_stage_niah_jsonl_writes_the_quality_v2_grid(tmp_path):
     output_path = tmp_path / "niah.jsonl"
+    paragraphs = _paragraphs()
 
     record = stage_niah_jsonl(
         output_path,
+        paragraphs=iter(paragraphs),
+        count_tokens=_word_count,
         sample_count=3,
-        seed=7,
     )
+    written = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
     loaded = load_benchmark_jsonl(output_path, dataset="niah", require_dataset=True)
 
     assert record["records"] == 3
+    assert record["kind"] == "quality_v2_needle_grid"
+    assert record["seed"] == QUALITY_V2_NIAH_SEED
     assert record["context_token_targets"] == [8192, 16384, 32768]
-    assert loaded[0].expected_answer == "cachet-needle-7-00000"
-    assert loaded[0].metadata["context_token_target"] == "8192"
-    assert loaded[0].metadata["niah_cell_id"] == "niah-8k-depth-10"
-    assert loaded[2].metadata["niah_cell_id"] == "niah-32k-depth-10"
+    assert written == build_quality_v2_niah_records(paragraphs, count_tokens=_word_count, item_count=3)
+    assert [example.metadata["niah_cell_id"] for example in loaded] == [
+        "niah-8k-depth-10",
+        "niah-16k-depth-10",
+        "niah-32k-depth-10",
+    ]
+    assert all(example.expected_answer.isdigit() for example in loaded)
+
+
+def test_niah_haystack_paragraphs_are_every_hotpotqa_then_musique_paragraph(tmp_path):
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    hotpot_path = tmp_path / "hotpot.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "id": "hp-1",
+                    "context": {
+                        "title": ["Ada", "Paris"],
+                        "sentences": [
+                            ["Ada wrote notes.", " She studied engines.", "(1843)"],
+                            ["Paris is in France."],
+                        ],
+                    },
+                },
+                {"id": "hp-2", "context": {"title": ["Rome"], "sentences": [["Rome is in Italy."]]}},
+            ]
+        ),
+        hotpot_path,
+    )
+    musique_path = tmp_path / "musique.jsonl"
+    musique_path.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {"id": "mq-1", "answerable": True, "paragraphs": [{"paragraph_text": "Oslo is in Norway."}]},
+                {"id": "mq-2", "answerable": False, "paragraphs": [{"paragraph_text": "No answer."}]},
+                {"id": "mq-3", "paragraphs": [{"paragraph_text": "Lima is in Peru."}]},
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert list(_niah_haystack_paragraphs(hotpot_path, musique_path)) == [
+        "Ada wrote notes. She studied engines.(1843)",
+        "Paris is in France.",
+        "Rome is in Italy.",
+        "Oslo is in Norway.",
+        "Lima is in Peru.",
+    ]
+
+
+def test_planner_prepares_staged_quality_v2_niah_records_for_scoring(tmp_path):
+    staged = tmp_path / "raw" / "niah.jsonl"
+    prepared = tmp_path / "prepared" / "niah.jsonl"
+    stage_niah_jsonl(staged, paragraphs=_paragraphs(), count_tokens=_word_count, sample_count=9)
+    plan = build_v1_benchmark_plan(
+        BenchmarkPlanConfig(
+            suite_id="niah-v2",
+            dataset_paths=tuple(
+                BenchmarkDatasetPath(
+                    dataset=dataset,
+                    raw_jsonl=str(tmp_path / "raw" / f"{dataset}.jsonl"),
+                    prepared_jsonl=str(tmp_path / "prepared" / f"{dataset}.jsonl"),
+                )
+                for dataset in ("biography", "hotpotqa", "musique", "niah")
+            ),
+            base_url="http://localhost:8000",
+            benchmark_output_json=str(tmp_path / "results.json"),
+        )
+    )
+    (prepare_niah,) = (command for command in plan.preparation_commands if command.name == "prepare-niah")
+    assert prepare_niah.argv[1:3] == ("-m", "document_kv_cache.dataset_prep")
+
+    assert dataset_prep.main(list(prepare_niah.argv[3:])) == 0
+    suite = load_v1_jsonl_suite(suite_id="niah-v2", paths={"niah": prepared})
+
+    class AnsweringEngine:
+        def generate(self, request):
+            return BenchmarkGeneration(
+                output_text=f"<final_answer>{request.example.expected_answer}</final_answer>",
+                prompt_tokens=_word_count(request.logical_prompt_text),
+                completion_tokens=4,
+                ttft_seconds=0.1,
+                time_to_completion_seconds=0.2,
+            )
+
+    result = run_benchmark_suite(
+        suite,
+        {BASELINE_PREFILL_ARM: AnsweringEngine(), CACHE_REUSE_ARM: AnsweringEngine()},
+    )
+    staged_records = {
+        record["example_id"]: record
+        for record in map(json.loads, staged.read_text(encoding="utf-8").splitlines())
+    }
+    scorer = quality_v2_scorer_registry().get("niah")
+
+    assert len(result.measurements) == 18
+    for measurement in result.measurements:
+        staged_record = staged_records[measurement.example_id]
+        assert (measurement.scorer_id, measurement.scorer_version) == (scorer.scorer_id, scorer.version)
+        assert measurement.quality_scores == {"accuracy": 1.0}
+        assert measurement.metadata["niah_cell_id"] == staged_record["metadata"]["niah_cell_id"]
+        assert measurement.prompt_tokens == int(staged_record["metadata"]["prompt_tokens"])
 
 
 def test_stage_full_benchmark_datasets_writes_metadata_with_counts(tmp_path):
@@ -169,15 +320,22 @@ def test_stage_full_benchmark_datasets_writes_metadata_with_counts(tmp_path):
         hotpot_path,
     )
     musique_path = tmp_path / "musique.jsonl"
+    source_paragraphs = _paragraphs()
     musique_path.write_text(
-        json.dumps(
-            {
-                "id": "mq-1",
-                "question": "Where?",
-                "answer": "France",
-                "answerable": True,
-                "paragraphs": [{"idx": 0, "paragraph_text": "Paris is in France."}],
-            }
+        "\n".join(
+            json.dumps(
+                {
+                    "id": f"mq-{row}",
+                    "question": "Where?",
+                    "answer": "France",
+                    "answerable": True,
+                    "paragraphs": [
+                        {"idx": index, "paragraph_text": paragraph}
+                        for index, paragraph in enumerate(source_paragraphs[row * 20 : (row + 1) * 20])
+                    ],
+                }
+            )
+            for row in range(len(source_paragraphs) // 20)
         )
         + "\n",
         encoding="utf-8",
@@ -198,12 +356,24 @@ def test_stage_full_benchmark_datasets_writes_metadata_with_counts(tmp_path):
             wikibio_zip=wikibio_path,
             niah_sample_count=5,
             limit_per_dataset=1,
-        )
+        ),
+        count_tokens=_word_count,
     )
     metadata = json.loads((tmp_path / "prepared" / "dataset-source-metadata.json").read_text(encoding="utf-8"))
+    (niah_record,) = map(
+        json.loads,
+        (tmp_path / "prepared" / "niah.jsonl").read_text(encoding="utf-8").splitlines(),
+    )
 
     assert record == metadata
-    assert record["record_type"] == "document_kv.full_benchmark_dataset_sources.v2"
+    assert record["record_type"] == "document_kv.full_benchmark_dataset_sources.v3"
+    assert record["source_refs"]["niah"]["builder"] == (
+        "document_kv_cache.quality_v2:build_quality_v2_niah_records"
+    )
+    assert record["source_refs"]["niah"]["token_counter"] == "caller-supplied"
+    assert record["source_refs"]["niah"]["seed"] == QUALITY_V2_NIAH_SEED
+    assert niah_record["metadata"]["niah_cell_id"] == "niah-8k-depth-10"
+    assert set(_haystack_paragraphs(niah_record)) <= {"Ada appears.", *source_paragraphs}
     assert record["datasets"]["biography"]["records"] == 1
     assert record["datasets"]["hotpotqa"]["records"] == 1
     assert record["datasets"]["musique"]["records"] == 1

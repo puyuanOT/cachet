@@ -11,7 +11,6 @@ from typing import Any, Literal
 from document_kv_cache.benchmarks import (
     BASELINE_PREFILL_ARM,
     CACHE_REUSE_ARM,
-    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
     BenchmarkArm,
     BenchmarkComparison,
     BenchmarkReportRow,
@@ -19,6 +18,7 @@ from document_kv_cache.benchmarks import (
     DatasetMetricSpec,
     InferenceMeasurement,
 )
+from document_kv_cache.quality_v2 import QUALITY_V2_PROMPT_TEMPLATE_VERSION
 
 
 class _FrozenList(list[Any]):
@@ -404,7 +404,7 @@ class BenchmarkManifestContext:
     tensor_parallel_size: int | None = None
     pipeline_parallel_size: int | None = None
     package_revisions: tuple[tuple[str, str], ...] = ()
-    prompt_template_version: str = DEFAULT_V1_PROMPT_TEMPLATE_VERSION
+    prompt_template_version: str = QUALITY_V2_PROMPT_TEMPLATE_VERSION
     input_tokens_target: int | None = None
     max_output_tokens: int | None = None
     temperature: float | None = None
@@ -574,8 +574,8 @@ class BenchmarkScorerManifest:
     metric_specs: tuple[DatasetMetricSpec, ...]
     prompt_plugin_path: str
     prompt_template_version: str
-    # Empty means the built-in v1 final-answer parser, which keeps manifests
-    # recorded before parser identities existed byte-for-byte unchanged.
+    # Empty when the scorer declares no answer parser; the publication gate
+    # rejects such scorers.
     answer_parser_id: str = ""
     answer_parser_version: str = ""
     answer_parser_plugin_path: str = ""

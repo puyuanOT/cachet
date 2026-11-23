@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
-from types import MappingProxyType
 from typing import Any, Literal
 
 from document_kv_cache.artifact_identity import ArtifactIdentity
@@ -23,23 +22,20 @@ from document_kv_cache.benchmarks import (
     FINAL_ANSWER_EXTRACTED_METADATA_KEY,
     FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY,
     FINAL_ANSWER_NO_EXTRACTION_VALUE,
-    FINAL_ANSWER_PARSER_DIGEST,
     FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY,
-    FINAL_ANSWER_PARSER_ID,
     FINAL_ANSWER_PARSER_ID_METADATA_KEY,
     FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY,
-    FINAL_ANSWER_PARSER_PLUGIN_PATH,
     FINAL_ANSWER_PARSER_STATUS_METADATA_KEY,
     FINAL_ANSWER_PARSER_STATUSES,
     FINAL_ANSWER_PARSER_VALID_METADATA_KEY,
-    FINAL_ANSWER_PARSER_VERSION,
     FINAL_ANSWER_PARSER_VERSION_METADATA_KEY,
     NIAH_CELL_IDS,
     SUPPORTED_V1_DATASETS,
-    extract_single_final_answer,
+    AnswerParserFunction,
     final_answer_measurement_metadata,
 )
 from document_kv_cache.methods import MethodRegistry, default_method_registry
+from document_kv_cache.quality_v2 import quality_v2_scorer_registry
 
 
 BENCHMARK_PUBLICATION_GATE_RECORD_TYPE = "document_kv.benchmark_publication_gate.v1"
@@ -48,14 +44,6 @@ CACHE_STATE_ATTESTATION_RECORD_TYPE = "document_kv.cache_state_attestation.v1"
 _NO_EXTRACTION_SHA256 = sha256(
     FINAL_ANSWER_NO_EXTRACTION_VALUE.encode("utf-8")
 ).hexdigest()
-_V1_FINAL_ANSWER_PARSER_IDENTITY = MappingProxyType(
-    {
-        FINAL_ANSWER_PARSER_ID_METADATA_KEY: FINAL_ANSWER_PARSER_ID,
-        FINAL_ANSWER_PARSER_VERSION_METADATA_KEY: FINAL_ANSWER_PARSER_VERSION,
-        FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY: FINAL_ANSWER_PARSER_PLUGIN_PATH,
-        FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY: FINAL_ANSWER_PARSER_DIGEST,
-    }
-)
 
 __all__ = [
     "BENCHMARK_PUBLICATION_GATE_RECORD_TYPE",
@@ -1035,9 +1023,9 @@ def _is_sha256_digest(value: Any) -> bool:
 
 def _scorer_final_answer_parser_identity(
     scorer: BenchmarkScorerManifest,
-) -> Mapping[str, str]:
+) -> Mapping[str, str] | None:
     if not scorer.answer_parser_id:
-        return _V1_FINAL_ANSWER_PARSER_IDENTITY
+        return None
     return {
         FINAL_ANSWER_PARSER_ID_METADATA_KEY: scorer.answer_parser_id,
         FINAL_ANSWER_PARSER_VERSION_METADATA_KEY: scorer.answer_parser_version,
@@ -1046,21 +1034,36 @@ def _scorer_final_answer_parser_identity(
     }
 
 
+def _registered_answer_parsers() -> dict[tuple[str, ...], AnswerParserFunction]:
+    parsers: dict[tuple[str, ...], AnswerParserFunction] = {}
+    for _dataset, scorer in quality_v2_scorer_registry().entries:
+        if scorer.answer_parser_function is not None:
+            parsers[
+                (
+                    scorer.answer_parser_id,
+                    scorer.answer_parser_version,
+                    scorer.answer_parser_plugin_path,
+                    scorer.answer_parser_digest,
+                )
+            ] = scorer.answer_parser_function
+    return parsers
+
+
 def _publication_score_contract_issues(
     result: BenchmarkRunResult,
 ) -> tuple[str, ...]:
     """Fail closed when scored measurements cannot reproduce answer extraction.
 
-    Every scored measurement must carry the final-answer parser identity its
-    manifest scorer declares, or the built-in v1 parser identity when the
-    scorer declares none. Only the built-in v1 parser can be re-run here, so
-    only raw results scored by it are re-extracted from ``output_text``. Raw
-    results scored by another declared parser are not re-extracted; they are
-    held to identity consistency and to a persisted status, validity flag, and
-    extracted answer that agree with each other. Sanitized results carry
-    neither the output text nor the extracted answer, so they are held to the
-    parser identity, a consistent status/validity pair, and the SHA-256 digest
-    of the extracted answer recorded when the evidence was sanitized.
+    Every manifest scorer must declare a final-answer parser identity, and every
+    scored measurement must carry exactly that identity. Raw results scored by a
+    parser that a registered scorer declares are re-extracted from
+    ``output_text`` with that parser. Raw results scored by any other declared
+    parser cannot be re-run here; they are held to identity consistency and to
+    a persisted status, validity flag, and extracted answer that agree with each
+    other. Sanitized results carry neither the output text nor the extracted
+    answer, so they are held to the parser identity, a consistent
+    status/validity pair, and the SHA-256 digest of the extracted answer
+    recorded when the evidence was sanitized.
     """
 
     manifest = result.experiment_manifest
@@ -1069,6 +1072,7 @@ def _publication_score_contract_issues(
     scorer_by_dataset = {
         scorer.dataset: scorer for scorer in manifest.scorer_identities
     }
+    registered_parsers = _registered_answer_parsers()
     issue_counts: dict[str, int] = {}
     niah_cells_by_arm: dict[str, set[str]] = {}
 
@@ -1094,16 +1098,22 @@ def _publication_score_contract_issues(
             note("score measurement metric set does not match the manifest scorer")
         metadata = measurement.metadata
         parser_identity = _scorer_final_answer_parser_identity(scorer)
-        for key, expected_value in parser_identity.items():
-            if metadata.get(key) != expected_value:
-                note("score measurement has missing or mixed final-answer parser identity")
-                break
+        parser = None
+        if parser_identity is None:
+            note("score measurement scorer declares no final-answer parser identity")
+        else:
+            for key, expected_value in parser_identity.items():
+                if metadata.get(key) != expected_value:
+                    note(
+                        "score measurement has missing or mixed final-answer "
+                        "parser identity"
+                    )
+                    break
+            if not result.evidence_sanitized:
+                parser = registered_parsers.get(tuple(parser_identity.values()))
         valid_value = metadata.get(FINAL_ANSWER_PARSER_VALID_METADATA_KEY)
         status_value = metadata.get(FINAL_ANSWER_PARSER_STATUS_METADATA_KEY)
-        if (
-            result.evidence_sanitized
-            or parser_identity != _V1_FINAL_ANSWER_PARSER_IDENTITY
-        ):
+        if parser is None:
             extraction_valid = valid_value == "true"
             if (
                 valid_value not in {"true", "false"}
@@ -1137,7 +1147,7 @@ def _publication_score_contract_issues(
                         "final-answer parser status"
                     )
         else:
-            extraction = extract_single_final_answer(measurement.output_text)
+            extraction = parser(measurement.output_text)
             expected_metadata = final_answer_measurement_metadata(extraction)
             if any(
                 metadata.get(key) != value for key, value in expected_metadata.items()

@@ -9,7 +9,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from document_kv_cache._benchmark_records import benchmark_gate_inputs_from_record
 from document_kv_cache.benchmarks import (
@@ -18,8 +18,10 @@ from document_kv_cache.benchmarks import (
     SUPPORTED_V1_DATASETS,
     SUPPORTED_V1_HARDWARE_TARGETS,
     BASELINE_PREFILL_ARM,
-    answer_found as _benchmark_answer_found,
-    exact_match as _benchmark_exact_match,
+    DatasetScoreContext,
+    DatasetScorerRegistry,
+    final_answer_measurement_metadata,
+    quality_label,
 )
 from document_kv_cache.benchmark_gates import (
     BENCHMARK_EVIDENCE_GATE_RECORD_TYPE,
@@ -53,6 +55,7 @@ from document_kv_cache.engine_probe import (
 from document_kv_cache.methods import MethodRegistry
 from document_kv_cache.model_profiles import get_model_profile
 from document_kv_cache.native_probe_factories import native_probe_adapter_contract_to_record
+from document_kv_cache.quality_v2 import quality_v2_scorer_registry
 from document_kv_cache.serving_env import serving_environment_profile
 from document_kv_cache.storage import is_real_uc_volume_root, local_path
 from document_kv_cache.storage_benchmark import RELEASE_STORAGE_BENCHMARK_READERS, STORAGE_BENCHMARK_RECORD_TYPE
@@ -814,8 +817,6 @@ def _validate_sglang_live_v1_runtime_metadata(
         issues.append("SGLang live V1 benchmark served_model_name must be non-empty")
     if record.get("cache_prompt_text_mode") != "logical":
         issues.append("SGLang live V1 benchmark cache_prompt_text_mode must be 'logical'")
-    if record.get("live_check_prompt_format") != "plain":
-        issues.append("SGLang live V1 benchmark live_check_prompt_format must be 'plain'")
     if record.get("live_check_request_mode") != "completion":
         issues.append("SGLang live V1 benchmark live_check_request_mode must be 'completion'")
     temperature = record.get("live_check_temperature")
@@ -1780,6 +1781,7 @@ def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) ->
     if not measurements:
         issues.append("v1 benchmark measurements must be non-empty")
         return
+    scorer_registry = quality_v2_scorer_registry()
     measurement_keys: set[tuple[str, str]] = set()
     for index, measurement in enumerate(measurements):
         if not isinstance(measurement, Mapping):
@@ -1835,10 +1837,11 @@ def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) ->
                 issues.append(
                     f"v1 benchmark measurement {dataset_value}:{arm_id_value} {field_name} must be boolean"
                 )
-        _validate_v1_measurement_quality_labels(
+        _validate_v1_measurement_quality(
             measurement,
             dataset=dataset_value,
             arm_id=arm_id_value,
+            scorer_registry=scorer_registry,
             issues=issues,
         )
         _validate_v1_measurement_token_context(
@@ -1857,38 +1860,77 @@ def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) ->
         issues.append(f"v1 benchmark measurements missing required dataset/arm pairs: {', '.join(missing)}")
 
 
-def _validate_v1_measurement_quality_labels(
+def _validate_v1_measurement_quality(
     measurement: Mapping[str, Any],
     *,
     dataset: Any,
     arm_id: Any,
+    scorer_registry: DatasetScorerRegistry,
     issues: list[str],
 ) -> None:
+    example_id = measurement.get("example_id")
     output_text = measurement.get("output_text")
     expected_answer = measurement.get("expected_answer")
-    exact_match = measurement.get("exact_match")
-    answer_found = measurement.get("answer_found")
-    if not isinstance(output_text, str) or not isinstance(expected_answer, str) or not expected_answer:
+    if (
+        dataset not in SUPPORTED_V1_DATASETS
+        or not isinstance(example_id, str)
+        or not example_id
+        or not isinstance(output_text, str)
+        or not isinstance(expected_answer, str)
+        or not expected_answer
+    ):
         return
     label = f"v1 benchmark measurement {dataset}:{arm_id}"
-    quality_scores = measurement.get("quality_scores")
-    scores = quality_scores if isinstance(quality_scores, Mapping) else {}
-    # Registered scorers score the parsed final answer and record the label in
-    # quality_scores; metrics the scorer does not record use the raw output text.
-    for field_name, value, raw_label in (
-        ("exact_match", exact_match, _benchmark_exact_match),
-        ("answer_found", answer_found, _benchmark_answer_found),
+    scorer = scorer_registry.get(dataset)
+    if (
+        measurement.get("scorer_id") != scorer.scorer_id
+        or measurement.get("scorer_version") != scorer.version
     ):
-        if type(value) is not bool:
-            continue
-        score = scores.get(field_name)
-        if score is None:
-            if value != raw_label(output_text, expected_answer):
-                issues.append(f"{label} {field_name} must match output_text and expected_answer")
-        elif not _is_non_negative_number(score):
-            issues.append(f"{label} quality_scores.{field_name} must be a non-negative finite number")
-        elif value != (score >= 0.5):
-            issues.append(f"{label} {field_name} must match quality_scores.{field_name}")
+        issues.append(f"{label} must be scored by {scorer.identity}")
+        return
+    references = measurement.get("references", [expected_answer])
+    if (
+        not isinstance(references, Sequence)
+        or isinstance(references, (str, bytes, bytearray))
+        or not references
+        or references[0] != expected_answer
+        or any(not isinstance(reference, str) or not reference for reference in references)
+    ):
+        issues.append(f"{label} references must be non-empty strings led by expected_answer")
+        return
+    metadata = measurement.get("metadata")
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    niah_cell_id = metadata.get("niah_cell_id")
+    try:
+        extraction, scores = scorer.score_output(
+            DatasetScoreContext(
+                dataset=dataset,
+                example_id=example_id,
+                output_text=output_text,
+                references=tuple(references),
+                metadata={} if niah_cell_id is None else {"niah_cell_id": niah_cell_id},
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        issues.append(f"{label} cannot be re-scored by {scorer.identity}: {exc}")
+        return
+    quality_scores = measurement.get("quality_scores")
+    if not isinstance(quality_scores, Mapping) or dict(quality_scores) != dict(scores):
+        issues.append(f"{label} quality_scores must match {scorer.identity} re-scoring output_text")
+    parser_metadata = {} if extraction is None else dict(final_answer_measurement_metadata(extraction))
+    if any(metadata.get(key) != value for key, value in parser_metadata.items()):
+        issues.append(f"{label} final-answer metadata must match {scorer.identity} re-parsing output_text")
+    label_names: tuple[Literal["exact_match", "answer_found"], ...] = ("exact_match", "answer_found")
+    for field_name in label_names:
+        value = measurement.get(field_name)
+        if type(value) is bool and value is not quality_label(
+            field_name,
+            quality_scores=scores,
+            metadata=parser_metadata,
+            output_text=output_text,
+            expected_answer=expected_answer,
+        ):
+            issues.append(f"{label} {field_name} must match {scorer.identity} re-scoring output_text")
 
 
 def _validate_v1_measurement_token_context(

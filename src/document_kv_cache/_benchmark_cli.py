@@ -17,13 +17,16 @@ from document_kv_cache.benchmarks import (
     CACHE_REUSE_ARM,
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
-    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
     BenchmarkArm,
     BenchmarkOfflineCosts,
     require_runnable_cachet_benchmark_arm,
     validate_v1_dataset,
 )
 from document_kv_cache.methods import MethodRegistry, default_method_registry
+from document_kv_cache.quality_v2 import (
+    QUALITY_V2_MAX_TOKENS,
+    QUALITY_V2_PROMPT_TEMPLATE_VERSION,
+)
 from document_kv_cache.storage import local_path
 
 
@@ -124,7 +127,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="smoke",
     )
     parser.add_argument("--api-key")
-    parser.add_argument("--max-tokens", type=int, default=128)
+    parser.add_argument("--max-tokens", type=int, default=QUALITY_V2_MAX_TOKENS)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--timeout-seconds", type=float, default=120.0)
     parser.add_argument("--no-stream", action="store_true")
@@ -232,7 +235,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--prompt-template-version",
-        default=DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+        default=QUALITY_V2_PROMPT_TEMPLATE_VERSION,
     )
     parser.add_argument("--input-tokens-target", type=int)
     parser.add_argument("--hardware-fingerprint", default="unresolved")

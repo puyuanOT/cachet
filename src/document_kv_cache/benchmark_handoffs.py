@@ -21,7 +21,6 @@ from document_kv_cache.benchmarks import (
     BENCHMARK_CACHE_ARTIFACT_PREFIX,
     DEFAULT_V1_LORA_ID,
     DEFAULT_V1_MODEL_ID,
-    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_ARTIFACT_ID_PARAM,
@@ -67,6 +66,10 @@ from document_kv_cache.methods import (
     CACHET_ARTIFACT_EXECUTION,
     MethodRegistry,
     default_method_registry,
+)
+from document_kv_cache.quality_v2 import (
+    QUALITY_V2_PROMPT_TEMPLATE_VERSION,
+    quality_v2_scorer_registry,
 )
 from document_kv_cache.storage import local_path
 from document_kv_cache.workflow import (
@@ -465,14 +468,17 @@ def generate_benchmark_handoff_bundles(
     With ``segment_per_document`` each multi-document example is materialized as one
     KV chunk per document, so the handoff assembles N document segments instead of a
     single monolithic prefix chunk (single-document examples are unchanged).
+
+    Each row's cached prefix comes from its scorer's prompt, using the Quality v2
+    registry unless ``scorer_registry`` is supplied, so the handoff matches the
+    prompt the benchmark runner serves.
     """
 
     if type(segment_per_document) is not bool:
         raise TypeError("segment_per_document must be a boolean")
-    if scorer_registry is not None and not isinstance(
-        scorer_registry,
-        DatasetScorerRegistry,
-    ):
+    if scorer_registry is None:
+        scorer_registry = quality_v2_scorer_registry()
+    if not isinstance(scorer_registry, DatasetScorerRegistry):
         raise TypeError("scorer_registry must be a DatasetScorerRegistry or None")
     resolved_cache_method = (
         CacheGenerationMethod.VANILLA_PREFILL
@@ -513,15 +519,11 @@ def generate_benchmark_handoff_bundles(
     shard_uri_text = _default_bundle_shard_uri(output_base, shard_uri=shard_uri)
     resolved_model_id = _optional_string(model_id, default=layout.model_id, field_name="model_id")
     resolved_lora_id = _optional_string(lora_id, default=layout.lora_id, field_name="lora_id")
-    scorer_prompt_versions = (
-        {
-            scorer.prompt_template_version
-            for _dataset, scorer in scorer_registry.entries
-            if scorer.prompt_template_version
-        }
-        if scorer_registry is not None
-        else set()
-    )
+    scorer_prompt_versions = {
+        scorer.prompt_template_version
+        for _dataset, scorer in scorer_registry.entries
+        if scorer.prompt_template_version
+    }
     if len(scorer_prompt_versions) > 1:
         raise ValueError(
             "scorer_registry must use one shared prompt_template_version for "
@@ -529,7 +531,7 @@ def generate_benchmark_handoff_bundles(
         )
     scorer_prompt_version = next(
         iter(scorer_prompt_versions),
-        DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+        QUALITY_V2_PROMPT_TEMPLATE_VERSION,
     )
     resolved_template_version = (
         scorer_prompt_version
@@ -624,9 +626,8 @@ def generate_benchmark_handoff_bundles(
     if not examples:
         raise ValueError("input_jsonl must contain at least one benchmark row")
     _validate_unique_benchmark_examples(examples)
-    example_scorers: tuple[DatasetScorer | None, ...] = tuple(
-        None if scorer_registry is None else scorer_registry.get(example.dataset)
-        for example in examples
+    example_scorers: tuple[DatasetScorer, ...] = tuple(
+        scorer_registry.get(example.dataset) for example in examples
     )
     source_documents = tuple(
         benchmark_cache_source_document(
@@ -983,7 +984,7 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--model-id", default=DEFAULT_V1_MODEL_ID)
     parser.add_argument("--lora-id", default=DEFAULT_V1_LORA_ID)
-    parser.add_argument("--prompt-template-version", default=DEFAULT_V1_PROMPT_TEMPLATE_VERSION)
+    parser.add_argument("--prompt-template-version", default=QUALITY_V2_PROMPT_TEMPLATE_VERSION)
     parser.add_argument(
         "--cache-method",
         choices=sorted(

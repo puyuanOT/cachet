@@ -44,7 +44,6 @@ from document_kv_cache.benchmarks import (
     FINAL_ANSWER_EXTRACTED_METADATA_KEY,
     FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY,
     FINAL_ANSWER_NO_EXTRACTION_VALUE,
-    FINAL_ANSWER_PARSER_DIGEST,
     FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY,
     FINAL_ANSWER_PARSER_ID_METADATA_KEY,
     FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY,
@@ -72,6 +71,7 @@ from document_kv_cache.methods import (
     MethodSpec,
     default_method_registry,
 )
+from document_kv_cache.quality_v2 import QUALITY_V2_PARSER_DIGEST
 from document_kv_cache.reuse_contract import ENGINE_NATIVE_ARTIFACT_FORMAT, PayloadDecodeStage
 from document_kv_cache.workflow import SourceDocument
 
@@ -452,7 +452,7 @@ def test_runner_persists_raw_and_extracted_answers_and_zeroes_invalid_structure(
     assert valid.metadata[FINAL_ANSWER_PARSER_VALID_METADATA_KEY] == "true"
     assert valid.metadata[FINAL_ANSWER_PARSER_STATUS_METADATA_KEY] == "ok"
     assert valid.metadata[FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY] == (
-        FINAL_ANSWER_PARSER_DIGEST
+        QUALITY_V2_PARSER_DIGEST
     )
     assert valid.quality_scores == {"exact_match": 1.0}
     assert invalid.output_text == "Ada Lovelace"
@@ -1792,7 +1792,9 @@ def test_benchmark_run_result_to_record_serializes_latency_quality_and_compariso
         suite,
         {
             BASELINE_PREFILL_ARM: RecordingEngine(output="Charles Babbage"),
-            CACHE_REUSE_ARM: RecordingEngine(),
+            CACHE_REUSE_ARM: RecordingEngine(
+                output="<final_answer>Ada Lovelace</final_answer>"
+            ),
         },
     )
 

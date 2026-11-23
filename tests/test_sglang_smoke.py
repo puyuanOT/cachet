@@ -9,10 +9,12 @@ from types import ModuleType
 
 import pytest
 
+import document_kv_cache.openai_compatible as openai_compatible_module
 import document_kv_cache.sglang_smoke as public_sglang_smoke
 from document_kv_cache.artifact_identity import TokenContract
 from document_kv_cache.benchmark_runner import BenchmarkGeneration
 from document_kv_cache.benchmarks import (
+    FINAL_ANSWER_EXTRACTED_METADATA_KEY,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
@@ -30,6 +32,11 @@ from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
 from document_kv_cache.kvpack import PackChunk
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.models import KVCacheKey
+from document_kv_cache.quality_v2 import (
+    quality_v2_prompt_parts,
+    quality_v2_scorer_registry,
+)
+from document_kv_cache.release_evidence import sglang_live_v1_benchmark_issues
 from document_kv_cache.sglang_smoke import (
     CACHET_MODEL_ID,
     DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
@@ -38,7 +45,6 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
     DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY,
-    DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
     DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM,
@@ -398,10 +404,12 @@ class TinySGLangLiveKVGenerator:
         )
 
 
+QWEN3_NO_THINKING_GENERATION_PROMPT = "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+
 class PromptFormatTokenizer:
     source_token_ids = (21, 22, 23, 24)
     runtime_token_ids = (21, 22, 23, 24, 25, 26)
-    plain_token_ids = (91, 92, 93, 94)
     seen_texts: list[str] = []
     seen_templates: list[list[dict[str, str]]] = []
     seen_template_kwargs: list[dict[str, object]] = []
@@ -411,12 +419,10 @@ class PromptFormatTokenizer:
         assert return_tensors == "pt"
         assert add_special_tokens is False
         self.seen_texts.append(text)
-        if text.startswith("<|im_start|>system") and "<|im_start|>assistant" in text:
+        if text.endswith(QWEN3_NO_THINKING_GENERATION_PROMPT):
             token_ids = self.runtime_token_ids
-        elif text.startswith("<|im_start|>system"):
+        elif text.startswith("<|im_start|>user\n"):
             token_ids = self.source_token_ids
-        elif text.startswith("Benchmark:"):
-            token_ids = self.plain_token_ids
         else:
             token_ids = (7, 8, 9, 10)
         return {"input_ids": [list(token_ids)]}
@@ -432,7 +438,7 @@ class PromptFormatTokenizer:
             f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>\n"
             for message in messages
         )
-        return rendered + "<|im_start|>assistant\n"
+        return rendered + QWEN3_NO_THINKING_GENERATION_PROMPT
 
 
 class PromptFormatSGLangLiveKVGenerator:
@@ -1137,6 +1143,26 @@ def test_parse_args_accepts_live_check_extra_body_json(tmp_path):
     }
 
 
+def test_parse_args_rejects_the_removed_live_check_prompt_format_flag(tmp_path, capsys):
+    with pytest.raises(SystemExit) as exc:
+        parse_args(
+            [
+                "--benchmark-id",
+                "sglang-prompt-format",
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--live-check-prompt-format",
+                "plain",
+            ]
+        )
+
+    assert exc.value.code == 2
+    assert (
+        "unrecognized arguments: --live-check-prompt-format plain"
+        in capsys.readouterr().err
+    )
+
+
 def test_parse_args_can_disable_cache_flushes(tmp_path):
     config = parse_args(
         [
@@ -1391,10 +1417,10 @@ def test_prepare_generated_live_handoff_writes_runtime_handoff_inputs(
     assert generation["sglang_hicache_page_size"] == 2
 
 
-def test_prepare_generated_live_handoff_uses_live_prompt_format_cache_prefix(
+def test_prepare_generated_live_handoff_renders_the_chat_template_in_chat_mode(
     tmp_path, monkeypatch
 ):
-    module = ModuleType("cachet_test_sglang_live_handoff_prompt_format_generator")
+    module = ModuleType("cachet_test_sglang_live_handoff_chat_template_generator")
     module.build_generator = PromptFormatSGLangLiveKVGenerator
     monkeypatch.setitem(sys.modules, module.__name__, module)
     PromptFormatTokenizer.seen_texts.clear()
@@ -1415,8 +1441,7 @@ def test_prepare_generated_live_handoff_uses_live_prompt_format_cache_prefix(
 
     runtime_config = prepare_generated_live_handoff(config)
 
-    assert config.live_check_prompt_format == DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
-    assert config.live_check_request_mode == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
+    assert config.live_check_request_mode == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE == "chat"
     assert runtime_config.sglang_hicache_page_keys == sglang_hicache_page_keys(
         PromptFormatTokenizer.source_token_ids,
         page_size=2,
@@ -1430,20 +1455,25 @@ def test_prepare_generated_live_handoff_uses_live_prompt_format_cache_prefix(
             "enable_thinking": False,
         }
     ]
-    assert PromptFormatTokenizer.seen_templates[0][0]["role"] == "system"
-    assert PromptFormatTokenizer.seen_templates[0][1]["role"] == "user"
-    assert all(
-        text.startswith("<|im_start|>system")
-        for text in PromptFormatTokenizer.seen_texts
+    live_request = public_sglang_smoke.build_live_server_check_request(
+        model_id=CACHET_MODEL_ID, use_cache_arm=True
     )
-    assert not any(
-        text.startswith("Benchmark:") for text in PromptFormatTokenizer.seen_texts
-    )
+    assert [
+        message["role"] for message in PromptFormatTokenizer.seen_templates[0]
+    ] == ["user"]
+    assert PromptFormatTokenizer.seen_texts[:2] == [
+        live_request.cache_prefix_text,
+        live_request.logical_prompt_text.removesuffix(
+            "<|im_start|>assistant\n"
+        )
+        + QWEN3_NO_THINKING_GENERATION_PROMPT,
+    ]
     generation = json.loads(
         config.live_handoff_generation_path.read_text(encoding="utf-8")
     )
     assert generation["live_check_request_mode"] == "chat"
-    assert generation["live_handoff_prompt_format"] == "plain"
+    assert "live_check_prompt_format" not in generation
+    assert "live_handoff_prompt_format" not in generation
     assert generation["chat_template_rendered"] is True
     assert generation["live_check_chat_template_kwargs"] == {
         "reasoning_effort": "none",
@@ -1457,6 +1487,46 @@ def test_prepare_generated_live_handoff_uses_live_prompt_format_cache_prefix(
         PromptFormatTokenizer.runtime_token_ids
     )
     assert generation["cache_prefix_token_stable"] is True
+
+
+def test_prepare_generated_live_handoff_caches_the_quality_v2_prefix_in_completion_mode(
+    tmp_path, monkeypatch
+):
+    module = ModuleType("cachet_test_sglang_live_handoff_completion_generator")
+    module.build_generator = PromptFormatSGLangLiveKVGenerator
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    PromptFormatTokenizer.seen_texts.clear()
+    PromptFormatTokenizer.seen_templates.clear()
+    PromptFormatTokenizer.seen_template_kwargs.clear()
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-generated-completion",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        live_check_request_mode="completion",
+        handoff_generation=SGLangLiveHandoffGenerationConfig(
+            output_dir=tmp_path / "generated-live",
+            generator_factory=f"{module.__name__}:build_generator",
+            dtype="bfloat16",
+            align_bytes=1,
+            page_size=2,
+        ),
+    )
+
+    prepare_generated_live_handoff(config)
+
+    live_request = public_sglang_smoke.build_live_server_check_request(
+        model_id=CACHET_MODEL_ID, use_cache_arm=True
+    )
+    assert PromptFormatTokenizer.seen_templates == []
+    assert PromptFormatTokenizer.seen_texts[:2] == [
+        live_request.cache_prefix_text,
+        live_request.logical_prompt_text,
+    ]
+    generation = json.loads(
+        config.live_handoff_generation_path.read_text(encoding="utf-8")
+    )
+    assert generation["live_check_request_mode"] == "completion"
+    assert generation["chat_template_rendered"] is False
 
 
 def test_prepare_generated_live_handoff_uses_token_stable_runtime_prefix(
@@ -1571,7 +1641,6 @@ def test_prepare_generated_live_handoff_uses_sglang_venv_when_available(
         benchmark_id="sglang-generated-venv",
         output_dir=tmp_path / "out",
         local_root=tmp_path / "local",
-        live_check_prompt_format="plain",
         live_check_temperature=0.25,
         handoff_generation=generation,
     )
@@ -1584,12 +1653,12 @@ def test_prepare_generated_live_handoff_uses_sglang_venv_when_available(
         assert argv[0] == str(config.venv_python)
         assert argv[1] == "-c"
         assert "DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY,\n" in argv[2]
-        assert "DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,\n" in argv[2]
+        assert "PROMPT_FORMAT" not in argv[2]
         assert "DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,\n" in argv[2]
         assert "DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,\n" in argv[2]
         input_payload = json.loads(Path(argv[3]).read_text(encoding="utf-8"))
         assert input_payload["benchmark_id"] == "sglang-generated-venv"
-        assert input_payload["live_check_prompt_format"] == "plain"
+        assert "live_check_prompt_format" not in input_payload
         assert input_payload["live_check_temperature"] == 0.25
         assert (
             input_payload["live_check_extra_body"]
@@ -1864,8 +1933,6 @@ def test_sglang_smoke_cli_accepts_generated_live_handoff(monkeypatch, tmp_path):
             "8",
             "--sglang-hicache-page-size",
             "2",
-            "--live-check-prompt-format",
-            "plain",
             "--live-check-request-mode",
             "completion",
             "--live-check-temperature",
@@ -1887,7 +1954,6 @@ def test_sglang_smoke_cli_accepts_generated_live_handoff(monkeypatch, tmp_path):
     assert generation.align_bytes == 8
     assert generation.page_size == 2
     assert generation.timeout_seconds == 12.5
-    assert seen_configs[0].live_check_prompt_format == "plain"
     assert seen_configs[0].live_check_request_mode == "completion"
     assert seen_configs[0].live_check_temperature == 0.25
     assert seen_configs[0].hicache_page_size == 2
@@ -2010,9 +2076,7 @@ def test_build_metadata_records_custom_params_transport(tmp_path):
         "enable_deterministic_inference": False,
     }
     assert metadata["cache_prompt_text_mode"] == "logical"
-    assert (
-        metadata["live_check_prompt_format"] == DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
-    )
+    assert "live_check_prompt_format" not in metadata
     assert metadata["live_check_request_mode"] == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     assert metadata["live_check_temperature"] == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
     assert metadata["live_check_extra_body"] == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
@@ -2122,7 +2186,7 @@ def test_run_sglang_quality_canary_records_model_sanity_result(tmp_path):
     assert record["model_id"] == CACHET_MODEL_ID
     assert record["served_model_name"] == SERVED_MODEL_NAME
     assert record["request_mode"] == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
-    assert record["prompt_format"] == DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
+    assert "prompt_format" not in record
     assert record["expected_answer"] == SGLANG_QUALITY_CANARY_ANSWER
     assert record["answer_found"] is True
     assert record["metadata"]["request_payload_endpoint"] == "/v1/chat/completions"
@@ -2413,7 +2477,7 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
     assert record["cache_arm_blocker"] is None
     assert record["requires_kv_transfer_params"] is True
     assert record["live_request_metadata_bridge_ok"] is True
-    assert record["live_check_prompt_format"] == DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
+    assert "live_check_prompt_format" not in record
     assert record["live_check_request_mode"] == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     assert record["live_check_temperature"] == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
     assert record["live_check_extra_body"] == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
@@ -2543,10 +2607,6 @@ def test_run_sglang_live_benchmark_writes_repeat_measurements(
             model_id=SERVED_MODEL_NAME,
             hardware_target=live_config.hardware_target,
             use_cache_arm=cache_arm,
-            prompt_format=public_sglang_smoke._live_check_request_prompt_format(
-                live_config.prompt_format,
-                request_mode=live_config.request_mode,
-            ),
             kv_transfer_params=(
                 live_config.kv_transfer_params if cache_arm else None
             ),
@@ -2554,7 +2614,7 @@ def test_run_sglang_live_benchmark_writes_repeat_measurements(
         return public_sglang_smoke.LiveServerCheckResult(
             request=request,
             generation=BenchmarkGeneration(
-                output_text="otkv7391",
+                output_text="<final_answer>otkv7391</final_answer>",
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 ttft_seconds=ttft_seconds,
@@ -2566,7 +2626,6 @@ def test_run_sglang_live_benchmark_writes_repeat_measurements(
             ),
             prompt_text_mode=live_config.prompt_text_mode,
             request_mode=live_config.request_mode,
-            prompt_format=live_config.prompt_format,
             answer_found=True,
         )
 
@@ -2611,6 +2670,150 @@ def test_run_sglang_live_benchmark_writes_repeat_measurements(
     assert written == record
 
 
+def _run_prepared_sglang_live_benchmark(monkeypatch, tmp_path, *, output_text):
+    dataset_specs = write_prepared_sglang_v1_datasets(tmp_path / "prepared")
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-prepared-v1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=dataset_specs,
+        live_benchmark_repeats=1,
+    )
+    config.server_log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def fake_benchmark_request(live_config, *, request, use_cache_arm):
+        cached_tokens = 32 if use_cache_arm else 0
+        with live_config.server_log_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                f"[INFO] Prefill batch, #new-token: {40 - cached_tokens}, "
+                f"#cached-token: {cached_tokens}\n"
+            )
+        return public_sglang_smoke.LiveServerCheckResult(
+            request=request,
+            generation=BenchmarkGeneration(
+                output_text=output_text(request.example.expected_answer or ""),
+                prompt_tokens=40,
+                completion_tokens=2,
+                ttft_seconds=0.1,
+                time_to_completion_seconds=0.2,
+                metadata={
+                    "prompt_token_source": "server_usage",
+                    "server_usage_prompt_tokens": "40",
+                },
+            ),
+            prompt_text_mode=(
+                live_config.cache_prompt_text_mode if use_cache_arm else "logical"
+            ),
+            request_mode=live_config.live_check_request_mode,
+            answer_found=True,
+        )
+
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "flush_sglang_cache",
+        lambda live_config, *, reason: fake_flush_record(reason=reason),
+    )
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "_run_sglang_live_benchmark_request",
+        fake_benchmark_request,
+    )
+    return run_sglang_live_benchmark(config)
+
+
+def test_prepared_sglang_live_benchmark_scores_measurements_with_quality_v2(
+    monkeypatch, tmp_path
+):
+    record = _run_prepared_sglang_live_benchmark(
+        monkeypatch,
+        tmp_path,
+        output_text=lambda answer: f"<final_answer>{answer}</final_answer>",
+    )
+
+    registry = quality_v2_scorer_registry()
+    assert record["ok"] is True
+    assert len(record["measurements"]) == len(SUPPORTED_V1_DATASETS) * 2
+    for measurement in record["measurements"]:
+        scorer = registry.get(measurement["dataset"])
+        assert measurement["scorer_id"] == scorer.scorer_id
+        assert measurement["scorer_version"] == scorer.version
+        assert measurement["quality_scores"] == dict.fromkeys(scorer.metric_names, 1.0)
+        assert (
+            measurement["metadata"][FINAL_ANSWER_EXTRACTED_METADATA_KEY]
+            == measurement["expected_answer"]
+        )
+    scorer_identities = {
+        registry.get(dataset).identity for dataset in SUPPORTED_V1_DATASETS
+    }
+    assert not [
+        issue
+        for issue in sglang_live_v1_benchmark_issues(record)
+        if any(identity in issue for identity in scorer_identities)
+    ]
+
+
+def test_prepared_sglang_live_benchmark_rejects_answers_outside_the_final_answer_block(
+    monkeypatch, tmp_path
+):
+    record = _run_prepared_sglang_live_benchmark(
+        monkeypatch,
+        tmp_path,
+        output_text=lambda answer: f"<final_answer>unknown</final_answer> {answer}",
+    )
+
+    assert record["ok"] is False
+    assert all(
+        measurement["answer_found"] is False for measurement in record["measurements"]
+    )
+    assert len(record["issues"]) == len(SUPPORTED_V1_DATASETS) * 2
+    assert all(
+        issue.endswith("did not return the expected answer") for issue in record["issues"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("answer_text", "expected_found"),
+    [
+        ("<final_answer>{answer}</final_answer>", True),
+        ("The documents say {answer}.", False),
+        ("The documents say {answer}. <final_answer>unknown</final_answer>", False),
+    ],
+    ids=("final-answer-block", "echoed-answer-without-block", "echoed-answer-outside-block"),
+)
+def test_prepared_sglang_live_request_judges_the_answer_the_quality_v2_parser_extracts(
+    monkeypatch, tmp_path, answer_text, expected_found
+):
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-prepared-v1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=write_prepared_sglang_v1_datasets(tmp_path / "prepared"),
+        live_benchmark_repeats=1,
+        stream=False,
+    )
+    baseline, _cache = public_sglang_smoke._sglang_live_benchmark_request_pairs(config)[0]
+    content = answer_text.format(answer=baseline.example.expected_answer)
+
+    class _ChatResponse:
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        openai_compatible_module, "_urlopen", lambda request, *, timeout: _ChatResponse()
+    )
+
+    result = public_sglang_smoke._run_sglang_live_benchmark_request(
+        config, request=baseline, use_cache_arm=False
+    )
+
+    assert result.generation.output_text == content
+    assert result.answer_found is expected_found
+    assert result.to_record()["ok"] is expected_found
+
+
 def test_run_sglang_live_benchmark_uses_prepared_v1_dataset_requests(
     monkeypatch, tmp_path
 ):
@@ -2650,7 +2853,7 @@ def test_run_sglang_live_benchmark_uses_prepared_v1_dataset_requests(
         return public_sglang_smoke.LiveServerCheckResult(
             request=request,
             generation=BenchmarkGeneration(
-                output_text=f"The answer is {expected_answer}.",
+                output_text=f"<final_answer>{expected_answer}</final_answer>",
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 ttft_seconds=ttft_seconds,
@@ -2664,7 +2867,6 @@ def test_run_sglang_live_benchmark_uses_prepared_v1_dataset_requests(
                 live_config.cache_prompt_text_mode if use_cache_arm else "logical"
             ),
             request_mode=live_config.live_check_request_mode,
-            prompt_format=live_config.live_check_prompt_format,
             answer_found=True,
         )
 
@@ -3679,41 +3881,35 @@ def test_probe_sglang_import_requires_request_metadata_bridge(monkeypatch, tmp_p
     assert record["error_type"] == "SGLangRequestMetadataBridgeUnavailable"
 
 
-def test_sglang_live_benchmark_prompt_parts_wrap_qwen3_chat_completion_prompts(tmp_path):
-    from document_kv_cache.benchmarks import BenchmarkExample, build_prompt_parts
-
-    example = BenchmarkExample(
-        example_id="bio-1",
-        dataset="biography",
-        documents=(
-            SourceDocument.from_text(
-                document_id="doc-1", text="Ada Lovelace wrote notes."
-            ),
-        ),
-        query="Who wrote the notes?",
+@pytest.mark.parametrize("request_mode", ["completion", "chat"])
+def test_sglang_prepared_live_benchmark_serves_the_quality_v2_prompt(
+    tmp_path, request_mode
+):
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-prepared-v1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=write_prepared_sglang_v1_datasets(tmp_path / "prepared"),
+        live_benchmark_repeats=1,
+        live_check_request_mode=request_mode,
     )
-    plain = build_prompt_parts(example)
 
-    def config(**overrides):
-        return SGLangSmokeBenchmarkConfig(
-            benchmark_id="sglang-1",
-            output_dir=tmp_path / "out",
-            baseline_only=True,
-            live_check_prompt_format="qwen3_chat",
-            **overrides,
-        )
-
-    wrapped = public_sglang_smoke._sglang_live_benchmark_prompt_parts(
-        config(live_check_request_mode="completion"), example
+    pairs = public_sglang_smoke._sglang_live_benchmark_request_pairs(config)
+    factory = public_sglang_smoke._sglang_live_benchmark_chat_messages_factory(
+        config, prompt_text_mode="logical"
     )
-    assert wrapped.system_prompt.startswith("<|im_start|>system\n")
-    assert wrapped.system_prompt.endswith(plain.system_prompt)
-    assert wrapped.document_context == plain.document_context
-    assert wrapped.user_prompt.endswith("<|im_start|>assistant\n")
 
-    assert (
-        public_sglang_smoke._sglang_live_benchmark_prompt_parts(
-            config(live_check_request_mode="chat"), example
-        )
-        == plain
-    )
+    assert [pair[0].example.dataset for pair in pairs] == list(SUPPORTED_V1_DATASETS)
+    for baseline, cache in pairs:
+        expected = quality_v2_prompt_parts(baseline.example)
+        assert baseline.prompt_parts == expected
+        assert cache.prompt_parts == expected
+        if request_mode == "chat":
+            assert factory is not None
+            rendered = "".join(
+                f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>\n"
+                for message in factory(baseline)
+            )
+            assert rendered + "<|im_start|>assistant\n" == baseline.logical_prompt_text
+        else:
+            assert factory is None

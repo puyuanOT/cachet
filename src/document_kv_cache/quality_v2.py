@@ -1,25 +1,29 @@
-"""Quality benchmark protocol v2 for the vLLM 0.30.0 publication.
+"""Quality v2, the answer-quality protocol of every Cachet benchmark.
 
-The sealed vLLM 0.27.1 full-score run (protocol
-``cachet-vllm-0.27.1-complete-score-v2``) sent raw completions without the model's
-chat template, stopped decoding at 64 tokens, and scored only an exact
-whole-output ``<final_answer>`` block.  Under that
-request shape the instruct model echoed instruction text before its answer, so the
-strict parser rejected almost every output for both arms and the published quality
-numbers do not measure answer quality.
+Benchmark runs, handoff generation, plans, and smoke runners prompt, decode,
+parse, and score through this module by default, and release evidence re-scores
+every measurement with its scorers:
 
-v2 keeps the model, runtime, datasets, answer normalisation and the per-document
-Vanilla cache method, and changes only what the v1 audit showed to be broken:
-
-* the same benchmark prompt sections are wrapped in the Qwen3 chat template (a
+* the benchmark prompt sections are wrapped in the Qwen3 chat template (a
   single user turn, exactly as ``apply_chat_template`` renders it);
-* decoding may run to 256 tokens;
+* decoding runs at temperature 0 for up to 256 tokens;
 * answers come from a versioned tolerant parser (the first closed
   ``<final_answer>`` block that is not the echoed placeholder), and strict
-  whole-output compliance is reported separately as a format metric;
+  whole-output compliance is reported only as a format metric;
 * biography references and predictions are compared without WikiBio's
   ``-lrb- ... -rrb-`` disambiguators;
 * NIAH uses natural-text haystacks with a numeric needle at a paragraph boundary.
+
+Why: the earlier protocol, sealed with the vLLM 0.27.1 full-score run as
+``cachet-vllm-0.27.1-complete-score-v2``, sent raw completions without the chat
+template, stopped decoding at 64 tokens, and accepted only an exact whole-output
+``<final_answer>`` block.  The instruct model echoed instruction text before its
+answer, so that parser rejected almost every output for both arms and its
+quality numbers did not measure answer quality.
+
+The sealed vLLM 0.30.0 Quality v2 report validates against
+``quality_v2_protocol_record()``, so the identities and plugin paths that record
+names must not change.
 """
 
 from __future__ import annotations
@@ -36,7 +40,6 @@ from hashlib import sha256
 from types import MappingProxyType
 from typing import Any
 
-from document_kv_cache._benchmark_datasets import _example_from_record
 from document_kv_cache.benchmarks import (
     HOTPOTQA_SCORER_VERSION,
     MUSIQUE_SCORER_VERSION,
@@ -154,7 +157,7 @@ def extract_first_final_answer(output_text: str) -> FinalAnswerExtraction:
 
 
 def quality_v2_prompt_parts(example: BenchmarkExample) -> BenchmarkPromptParts:
-    """Wrap the v1 benchmark sections in a single Qwen3 chat user turn.
+    """Wrap the dataset's benchmark sections in a single Qwen3 chat user turn.
 
     The chat markers ride on the leading cached section and on the online suffix,
     so per-document segmentation of the document context is unchanged.
@@ -254,9 +257,7 @@ def quality_v2_scorer_registry() -> DatasetScorerRegistry:
     )
     hotpotqa = DatasetScorer(
         scorer_id="hotpotqa.official_answer",
-        version=HOTPOTQA_SCORER_VERSION.split("+final_answer_v1@")[0]
-        + "+"
-        + _PARSER_SUFFIX,
+        version=f"{HOTPOTQA_SCORER_VERSION}+{_PARSER_SUFFIX}",
         metric_names=("exact_match", "f1"),
         metric_specs=(
             DatasetMetricSpec("exact_match", max_regression=QUALITY_V2_MAX_REGRESSION),
@@ -268,9 +269,7 @@ def quality_v2_scorer_registry() -> DatasetScorerRegistry:
     )
     musique = DatasetScorer(
         scorer_id="musique.official_answer",
-        version=MUSIQUE_SCORER_VERSION.split("+final_answer_v1@")[0]
-        + "+"
-        + _PARSER_SUFFIX,
+        version=f"{MUSIQUE_SCORER_VERSION}+{_PARSER_SUFFIX}",
         metric_names=("answer_em", "answer_f1"),
         metric_specs=(
             DatasetMetricSpec("answer_em", max_regression=QUALITY_V2_MAX_REGRESSION),
@@ -347,6 +346,9 @@ def build_quality_v2_niah_records(
     requested depth.  ``count_tokens`` must count tokens of the full chat-framed
     prompt text; each prompt lands in ``[target - 384, target]`` tokens.
     """
+
+    # _benchmark_datasets imports _benchmark_models, which imports this module.
+    from document_kv_cache._benchmark_datasets import _example_from_record
 
     pool = tuple(
         dict.fromkeys(
@@ -465,7 +467,7 @@ class QualityV2DatasetSummary:
     errors: Mapping[str, int]
 
     def to_record(self) -> dict[str, Any]:
-        return json.loads(
+        record: dict[str, Any] = json.loads(
             json.dumps(
                 {
                     "dataset": self.dataset,
@@ -480,6 +482,7 @@ class QualityV2DatasetSummary:
                 sort_keys=True,
             )
         )
+        return record
 
 
 def summarize_quality_v2_pairs(
@@ -547,7 +550,10 @@ def summarize_quality_v2_pairs(
             metrics=metrics,
             strict_format_rate={
                 arm: statistics.fmean(
-                    float(extract_single_final_answer(str(row.get("output_text") or "")).valid)
+                    float(
+                        extract_single_final_answer(str(row.get("output_text") or ""))
+                        is not None
+                    )
                     for row in rows
                 )
                 for arm, rows in arms.items()
