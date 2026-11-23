@@ -30,7 +30,10 @@ from document_kv_cache.databricks_engine_probe_job import (
 from document_kv_cache.engine_adapters import ServingBackend
 from document_kv_cache.native_probe_factories import SGLANG_NATIVE_PROBE_FACTORY, VLLM_NATIVE_PROBE_FACTORY
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
-from document_kv_cache.quality_v2 import QUALITY_V2_PROMPT_TEMPLATE_VERSION
+from document_kv_cache.quality_v2 import (
+    QUALITY_V2_MAX_TOKENS,
+    QUALITY_V2_PROMPT_TEMPLATE_VERSION,
+)
 from document_kv_cache.release_bundle import _build_parser as build_release_bundle_parser
 from document_kv_cache.release_evidence import _build_parser as build_release_evidence_parser
 from sglang_kv_injection.sglang_dynamic_backend import DOCUMENT_KV_HICACHE_PROVIDER_FACTORY
@@ -372,7 +375,7 @@ def test_plan_threads_complete_runtime_provenance_to_record_and_runner(tmp_path)
         "package_revisions": [],
         "prompt_template_version": QUALITY_V2_PROMPT_TEMPLATE_VERSION,
         "input_tokens_target": None,
-        "max_output_tokens": 128,
+        "max_output_tokens": QUALITY_V2_MAX_TOKENS,
         "hardware_fingerprint": "unresolved",
         "runtime_id": "unresolved",
         "runtime_version": "unresolved",

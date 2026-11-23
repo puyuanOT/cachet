@@ -27,6 +27,7 @@ from document_kv_cache.databricks_job import (
     _validated_spark_env_vars,
     build_single_node_gpu_cluster,
 )
+from document_kv_cache.quality_v2 import QUALITY_V2_MAX_TOKENS
 from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
     DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE,
@@ -118,7 +119,7 @@ class DatabricksSGLangSmokeJobConfig:
     data_security_mode: str = DEFAULT_DATABRICKS_DATA_SECURITY_MODE
     single_user_name: str | None = None
     wheel_uri: str | None = None
-    max_tokens: int = 32
+    max_tokens: int = QUALITY_V2_MAX_TOKENS
     timeout_seconds: float = 240.0
     import_probe_timeout_seconds: float = 180.0
     server_start_timeout_seconds: float = 480.0
@@ -738,7 +739,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--wheel-uri",
         help="Optional cluster-visible wheel URI to install before the task.",
     )
-    parser.add_argument("--max-tokens", type=int, default=32)
+    parser.add_argument("--max-tokens", type=int, default=QUALITY_V2_MAX_TOKENS)
     parser.add_argument("--timeout-seconds", type=float, default=240.0)
     parser.add_argument("--import-probe-timeout-seconds", type=float, default=180.0)
     parser.add_argument("--server-start-timeout-seconds", type=float, default=480.0)

@@ -1,20 +1,34 @@
 from __future__ import annotations
 
+import argparse
+import dataclasses
 import json
 import random
 from pathlib import Path
 
 import pytest
 
+from document_kv_cache import (
+    _benchmark_cli,
+    benchmark_plan,
+    databricks_sglang_smoke_job,
+    databricks_vllm_smoke_job,
+    live_server,
+    sglang_smoke,
+    vllm_smoke,
+)
 from document_kv_cache._benchmark_datasets import _example_from_record
+from document_kv_cache.benchmark_runner import OpenAICompatibleBenchmarkConfig
 from document_kv_cache.benchmarks import (
     NIAH_CELL_IDS,
     DatasetScoreContext,
     extract_single_final_answer,
 )
 import document_kv_cache.quality_v2 as quality_v2_module
+from document_kv_cache.openai_compatible import OpenAICompatibleEngineConfig
 from document_kv_cache.quality_v2 import (
     QUALITY_V2_MAX_REGRESSION,
+    QUALITY_V2_MAX_TOKENS,
     QUALITY_V2_PARSER_DIGEST,
     QUALITY_V2_PROMPT_TEMPLATE_VERSION,
     QUALITY_V2_README_MARKERS,
@@ -385,3 +399,64 @@ class TestReport:
         execution["chunks"] = [c for c in execution["chunks"] if c["dataset"] != "musique"]
         with pytest.raises(ValueError, match="every protocol dataset"):
             quality_v2_report_record(baseline, cached, execution=execution, bootstrap_draws=10)
+
+
+class _ParsedDefaults(BaseException):
+    def __init__(self, defaults: dict[str, object]) -> None:
+        super().__init__()
+        self.defaults = defaults
+
+
+class TestDecodeDefaults:
+    @pytest.mark.parametrize(
+        ("config_type", "temperature_field"),
+        [
+            (OpenAICompatibleBenchmarkConfig, "temperature"),
+            (OpenAICompatibleEngineConfig, "temperature"),
+            (benchmark_plan.BenchmarkPlanConfig, "temperature"),
+            (live_server.LiveServerCheckConfig, "temperature"),
+            (vllm_smoke.VLLMSmokeBenchmarkConfig, None),
+            (sglang_smoke.SGLangSmokeBenchmarkConfig, "live_check_temperature"),
+            (databricks_vllm_smoke_job.DatabricksVLLMSmokeJobConfig, None),
+            (databricks_sglang_smoke_job.DatabricksSGLangSmokeJobConfig, "live_check_temperature"),
+        ],
+    )
+    def test_configs_decode_with_the_protocol_budget(self, config_type, temperature_field) -> None:
+        defaults = {field.name: field.default for field in dataclasses.fields(config_type)}
+        assert defaults["max_tokens"] == QUALITY_V2_MAX_TOKENS
+        if temperature_field is not None:
+            assert defaults[temperature_field] == 0.0
+
+    @pytest.mark.parametrize(
+        ("parse", "temperature_dest"),
+        [
+            (_benchmark_cli.main, "temperature"),
+            (benchmark_plan.main, "temperature"),
+            (live_server.main, None),
+            (vllm_smoke.parse_args, None),
+            (sglang_smoke.parse_args, "live_check_temperature"),
+            (databricks_vllm_smoke_job.main, None),
+            (databricks_sglang_smoke_job.main, "live_check_temperature"),
+        ],
+        ids=(
+            "benchmark",
+            "benchmark-plan",
+            "live-check",
+            "vllm-smoke",
+            "sglang-smoke",
+            "databricks-vllm-smoke",
+            "databricks-sglang-smoke",
+        ),
+    )
+    def test_clis_decode_with_the_protocol_budget(
+        self, monkeypatch, parse, temperature_dest
+    ) -> None:
+        def capture_defaults(parser, args=None, namespace=None):
+            raise _ParsedDefaults({action.dest: action.default for action in parser._actions})
+
+        monkeypatch.setattr(argparse.ArgumentParser, "parse_args", capture_defaults)
+        with pytest.raises(_ParsedDefaults) as parsed:
+            parse([])
+        assert parsed.value.defaults["max_tokens"] == QUALITY_V2_MAX_TOKENS
+        if temperature_dest is not None:
+            assert parsed.value.defaults[temperature_dest] == 0.0

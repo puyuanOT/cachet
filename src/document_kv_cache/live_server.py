@@ -41,7 +41,11 @@ from document_kv_cache.openai_compatible import (
     PromptTextMode,
     PromptTokenAccounting,
 )
-from document_kv_cache.quality_v2 import _CHAT_ASSISTANT_OPEN, _CHAT_USER_OPEN
+from document_kv_cache.quality_v2 import (
+    QUALITY_V2_MAX_TOKENS,
+    _CHAT_ASSISTANT_OPEN,
+    _CHAT_USER_OPEN,
+)
 from document_kv_cache.workflow import SourceDocument
 
 __all__ = [
@@ -74,7 +78,7 @@ class LiveServerCheckConfig:
     kv_transfer_params_transport: KVTransferParamsTransport = "top_level"
     request_mode: OpenAICompatibleRequestMode = "completion"
     stream: bool = True
-    max_tokens: int = 32
+    max_tokens: int = QUALITY_V2_MAX_TOKENS
     temperature: float = 0.0
     timeout_seconds: float = 120.0
     expected_answer: str = DEFAULT_LIVE_CHECK_ANSWER
@@ -307,7 +311,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--model-id", default=DEFAULT_V1_MODEL_ID)
     parser.add_argument("--hardware-target", default=DEFAULT_HARDWARE_TARGET)
     parser.add_argument("--api-key")
-    parser.add_argument("--max-tokens", type=int, default=32)
+    parser.add_argument("--max-tokens", type=int, default=QUALITY_V2_MAX_TOKENS)
     parser.add_argument("--timeout-seconds", type=float, default=120.0)
     parser.add_argument(
         "--prompt-format",

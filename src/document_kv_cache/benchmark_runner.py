@@ -86,6 +86,7 @@ from document_kv_cache._benchmark_models import (
     _validated_decode_settings,
 )
 from document_kv_cache.quality_v2 import (
+    QUALITY_V2_MAX_TOKENS,
     QUALITY_V2_PROMPT_TEMPLATE_VERSION,
     quality_v2_scorer_registry,
 )
@@ -242,7 +243,7 @@ class OpenAICompatibleBenchmarkConfig:
     seed: int | None = None
     isolate_arms: bool = True
     api_key: str | None = None
-    max_tokens: int = 128
+    max_tokens: int = QUALITY_V2_MAX_TOKENS
     temperature: float = 0.0
     timeout_seconds: float = 120.0
     stream: bool = True

@@ -30,7 +30,10 @@ from document_kv_cache.native_probe_factories import (
     native_probe_adapter_contract_to_record,
 )
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
-from document_kv_cache.quality_v2 import QUALITY_V2_PROMPT_TEMPLATE_VERSION
+from document_kv_cache.quality_v2 import (
+    QUALITY_V2_MAX_TOKENS,
+    QUALITY_V2_PROMPT_TEMPLATE_VERSION,
+)
 from document_kv_cache.storage import local_path
 from document_kv_cache.storage_benchmark import (
     RELEASE_STORAGE_BENCHMARK_READERS,
@@ -437,7 +440,7 @@ class BenchmarkPlanConfig:
     python_executable: str = "python"
     require_all_v1_datasets: bool = True
     limit_per_dataset: int | None = None
-    max_tokens: int = 128
+    max_tokens: int = QUALITY_V2_MAX_TOKENS
     temperature: float = 0.0
     repeats: int = 1
     request_parallelism: int = 1
@@ -2305,7 +2308,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--python-executable", default=sys.executable)
     parser.add_argument("--allow-partial", action="store_true", help="Allow a subset of the four V1 datasets.")
     parser.add_argument("--limit-per-dataset", type=int)
-    parser.add_argument("--max-tokens", type=int, default=128)
+    parser.add_argument("--max-tokens", type=int, default=QUALITY_V2_MAX_TOKENS)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--request-parallelism", type=int, default=1)

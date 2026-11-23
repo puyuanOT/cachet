@@ -88,7 +88,10 @@ from document_kv_cache.openai_compatible import (
     OpenAICompatibleRequestMode,
     PromptTextMode,
 )
-from document_kv_cache.quality_v2 import QUALITY_V2_PROMPT_TEMPLATE_VERSION
+from document_kv_cache.quality_v2 import (
+    QUALITY_V2_MAX_TOKENS,
+    QUALITY_V2_PROMPT_TEMPLATE_VERSION,
+)
 from document_kv_cache.serving_env import (
     SGLANG_DEPENDENCY_CONSTRAINTS,
     SGLANG_SERVING_ENVIRONMENT_PROFILE,
@@ -368,7 +371,7 @@ class SGLangSmokeBenchmarkConfig:
 
     benchmark_id: str
     output_dir: Path
-    max_tokens: int = 32
+    max_tokens: int = QUALITY_V2_MAX_TOKENS
     timeout_seconds: float = 240.0
     import_probe_timeout_seconds: float = 180.0
     server_start_timeout_seconds: float = 480.0
@@ -3680,7 +3683,7 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
     )
     parser.add_argument("--benchmark-id", required=True)
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--max-tokens", type=int, default=32)
+    parser.add_argument("--max-tokens", type=int, default=QUALITY_V2_MAX_TOKENS)
     parser.add_argument("--timeout-seconds", type=float, default=240.0)
     parser.add_argument("--import-probe-timeout-seconds", type=float, default=180.0)
     parser.add_argument("--server-start-timeout-seconds", type=float, default=480.0)
