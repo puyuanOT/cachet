@@ -17,13 +17,13 @@ from document_kv_cache.benchmarks import (
     CACHE_REUSE_ARM,
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
-    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
     BenchmarkArm,
     BenchmarkOfflineCosts,
     require_runnable_cachet_benchmark_arm,
     validate_v1_dataset,
 )
 from document_kv_cache.methods import MethodRegistry, default_method_registry
+from document_kv_cache.quality_v2 import QUALITY_V2_PROMPT_TEMPLATE_VERSION
 from document_kv_cache.storage import local_path
 
 
@@ -232,7 +232,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--prompt-template-version",
-        default=DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+        default=QUALITY_V2_PROMPT_TEMPLATE_VERSION,
     )
     parser.add_argument("--input-tokens-target", type=int)
     parser.add_argument("--hardware-fingerprint", default="unresolved")

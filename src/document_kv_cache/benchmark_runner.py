@@ -46,7 +46,6 @@ from document_kv_cache.benchmarks import (
     CACHE_REUSE_ARM,
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
-    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
     DOCUMENT_KV_ARTIFACT_ID_PARAM,
     DOCUMENT_KV_CACHE_METHOD_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
@@ -62,7 +61,6 @@ from document_kv_cache.benchmarks import (
     build_prompt_parts,
     compare_to_baseline,
     document_kv_cache_arm,
-    default_dataset_scorer_registry,
     final_answer_measurement_metadata,
     require_runnable_cachet_benchmark_arm,
     summarize_measurements,
@@ -86,6 +84,10 @@ from document_kv_cache._benchmark_models import (
     _validate_positive_finite_number,
     _validate_positive_int,
     _validated_decode_settings,
+)
+from document_kv_cache.quality_v2 import (
+    QUALITY_V2_PROMPT_TEMPLATE_VERSION,
+    quality_v2_scorer_registry,
 )
 
 
@@ -272,7 +274,7 @@ class OpenAICompatibleBenchmarkConfig:
     tensor_parallel_size: int | None = None
     pipeline_parallel_size: int | None = None
     package_revisions: tuple[tuple[str, str], ...] = ()
-    prompt_template_version: str = DEFAULT_V1_PROMPT_TEMPLATE_VERSION
+    prompt_template_version: str = QUALITY_V2_PROMPT_TEMPLATE_VERSION
     input_tokens_target: int | None = None
     generation_seed: int | None = None
     hardware_fingerprint: str = "unresolved"
@@ -852,7 +854,7 @@ def run_benchmark_suite(
     allow_unscoped_cache_params = (
         sum(1 for arm in arms if arm.requires_cachet_handoff) == 1
     )
-    scorers = scorer_registry or default_dataset_scorer_registry()
+    scorers = scorer_registry or quality_v2_scorer_registry()
     if not isinstance(scorers, DatasetScorerRegistry):
         raise TypeError("scorer_registry must be DatasetScorerRegistry")
     for dataset in suite.datasets:
@@ -1079,7 +1081,7 @@ def run_openai_compatible_v1_benchmark(
         )
     return run_openai_compatible_benchmark(
         config,
-        scorer_registry=default_dataset_scorer_registry(),
+        scorer_registry=quality_v2_scorer_registry(),
         engine_factory=engine_factory,
         method_registry=method_registry,
     )

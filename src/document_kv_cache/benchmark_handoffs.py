@@ -21,7 +21,6 @@ from document_kv_cache.benchmarks import (
     BENCHMARK_CACHE_ARTIFACT_PREFIX,
     DEFAULT_V1_LORA_ID,
     DEFAULT_V1_MODEL_ID,
-    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_ARTIFACT_ID_PARAM,
@@ -68,6 +67,7 @@ from document_kv_cache.methods import (
     MethodRegistry,
     default_method_registry,
 )
+from document_kv_cache.quality_v2 import QUALITY_V2_PROMPT_TEMPLATE_VERSION
 from document_kv_cache.storage import local_path
 from document_kv_cache.workflow import (
     CacheBuildConfig,
@@ -529,7 +529,7 @@ def generate_benchmark_handoff_bundles(
         )
     scorer_prompt_version = next(
         iter(scorer_prompt_versions),
-        DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+        QUALITY_V2_PROMPT_TEMPLATE_VERSION,
     )
     resolved_template_version = (
         scorer_prompt_version
@@ -983,7 +983,7 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--model-id", default=DEFAULT_V1_MODEL_ID)
     parser.add_argument("--lora-id", default=DEFAULT_V1_LORA_ID)
-    parser.add_argument("--prompt-template-version", default=DEFAULT_V1_PROMPT_TEMPLATE_VERSION)
+    parser.add_argument("--prompt-template-version", default=QUALITY_V2_PROMPT_TEMPLATE_VERSION)
     parser.add_argument(
         "--cache-method",
         choices=sorted(

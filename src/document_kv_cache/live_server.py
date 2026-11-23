@@ -18,7 +18,6 @@ from document_kv_cache.benchmarks import (
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
     BenchmarkExample,
-    BenchmarkPromptParts,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
@@ -42,6 +41,7 @@ from document_kv_cache.openai_compatible import (
     PromptTextMode,
     PromptTokenAccounting,
 )
+from document_kv_cache.quality_v2 import _CHAT_ASSISTANT_OPEN, _CHAT_USER_OPEN
 from document_kv_cache.workflow import SourceDocument
 
 __all__ = [
@@ -61,10 +61,6 @@ LIVE_CHECK_SUITE_ID = "openai-compatible-live-check"
 DEFAULT_LIVE_CHECK_ANSWER = "otkv7391"
 LiveCheckPromptFormat = Literal["plain", "qwen3_chat"]
 DEFAULT_LIVE_CHECK_PROMPT_FORMAT: LiveCheckPromptFormat = "plain"
-_QWEN3_CHAT_SYSTEM_PROMPT = (
-    "You are a precise benchmark extraction assistant. "
-    "Return only the requested answer, with no explanation."
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,10 +161,8 @@ def build_live_server_check_request(
     hardware_target: str = DEFAULT_HARDWARE_TARGET,
     use_cache_arm: bool = False,
     expected_answer: str = DEFAULT_LIVE_CHECK_ANSWER,
-    prompt_format: LiveCheckPromptFormat = DEFAULT_LIVE_CHECK_PROMPT_FORMAT,
     kv_transfer_params: Mapping[str, Any] | None = None,
 ) -> BenchmarkEngineRequest:
-    _validate_live_check_prompt_format(prompt_format)
     params = {} if kv_transfer_params is None else dict(kv_transfer_params)
     if params and not use_cache_arm:
         raise ValueError("kv_transfer_params require use_cache_arm=True")
@@ -193,14 +187,13 @@ def build_live_server_check_request(
     )
     arm = document_kv_cache_arm() if use_cache_arm else baseline_prefill_arm()
     request_params = example.kv_transfer_params if arm.uses_cache else {}
-    prompt_parts = _live_check_prompt_parts(example, prompt_format=prompt_format)
     return BenchmarkEngineRequest(
         suite_id=LIVE_CHECK_SUITE_ID,
         model_id=model_id,
         hardware_target=hardware_target,
         example=example,
         arm=arm,
-        prompt_parts=prompt_parts,
+        prompt_parts=build_prompt_parts(example),
         request_id=_request_id_from_kv_transfer_params(request_params),
         kv_transfer_params=request_params,
     )
@@ -272,9 +265,6 @@ def run_openai_compatible_live_check(
         hardware_target=config.hardware_target,
         use_cache_arm=config.use_cache_arm,
         expected_answer=config.expected_answer,
-        prompt_format=_live_check_request_prompt_format(
-            config.prompt_format, request_mode=config.request_mode
-        ),
         kv_transfer_params=config.kv_transfer_params,
     )
     active_engine = engine or OpenAICompatibleCompletionEngine(
@@ -488,34 +478,13 @@ def _live_check_chat_messages(
         if prompt_text_mode == "runtime"
         else request.logical_prompt_text
     )
-    return (
-        {"role": "system", "content": _QWEN3_CHAT_SYSTEM_PROMPT},
-        {"role": "user", "content": content},
-    )
+    return ({"role": "user", "content": _qwen3_chat_user_content(content)},)
 
 
-def _live_check_prompt_parts(
-    example: BenchmarkExample,
-    *,
-    prompt_format: LiveCheckPromptFormat,
-) -> BenchmarkPromptParts:
-    parts = build_prompt_parts(example)
-    if prompt_format == "plain":
-        return parts
-    if prompt_format == "qwen3_chat":
-        return BenchmarkPromptParts(
-            system_prompt=(
-                "<|im_start|>system\n"
-                "You are a precise benchmark extraction assistant. "
-                "Return only the requested answer, with no explanation.\n"
-                "<|im_end|>\n"
-                "<|im_start|>user\n"
-                f"{parts.system_prompt}"
-            ),
-            document_context=parts.document_context,
-            user_prompt=f"{parts.user_prompt}\n<|im_end|>\n<|im_start|>assistant\n",
-        )
-    raise ValueError(f"unsupported live check prompt_format {prompt_format!r}")
+def _qwen3_chat_user_content(prompt_text: str) -> str:
+    """Return the Quality v2 user turn without the markers a chat template re-adds."""
+
+    return prompt_text.removeprefix(_CHAT_USER_OPEN).removesuffix(_CHAT_ASSISTANT_OPEN)
 
 
 def _validate_live_check_prompt_format(value: object) -> None:

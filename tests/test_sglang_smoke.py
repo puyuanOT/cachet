@@ -30,6 +30,7 @@ from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
 from document_kv_cache.kvpack import PackChunk
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.models import KVCacheKey
+from document_kv_cache.quality_v2 import quality_v2_prompt_parts
 from document_kv_cache.sglang_smoke import (
     CACHET_MODEL_ID,
     DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
@@ -398,10 +399,12 @@ class TinySGLangLiveKVGenerator:
         )
 
 
+QWEN3_NO_THINKING_GENERATION_PROMPT = "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+
 class PromptFormatTokenizer:
     source_token_ids = (21, 22, 23, 24)
     runtime_token_ids = (21, 22, 23, 24, 25, 26)
-    plain_token_ids = (91, 92, 93, 94)
     seen_texts: list[str] = []
     seen_templates: list[list[dict[str, str]]] = []
     seen_template_kwargs: list[dict[str, object]] = []
@@ -411,12 +414,10 @@ class PromptFormatTokenizer:
         assert return_tensors == "pt"
         assert add_special_tokens is False
         self.seen_texts.append(text)
-        if text.startswith("<|im_start|>system") and "<|im_start|>assistant" in text:
+        if text.endswith(QWEN3_NO_THINKING_GENERATION_PROMPT):
             token_ids = self.runtime_token_ids
-        elif text.startswith("<|im_start|>system"):
+        elif text.startswith("<|im_start|>user\n"):
             token_ids = self.source_token_ids
-        elif text.startswith("Benchmark:"):
-            token_ids = self.plain_token_ids
         else:
             token_ids = (7, 8, 9, 10)
         return {"input_ids": [list(token_ids)]}
@@ -432,7 +433,7 @@ class PromptFormatTokenizer:
             f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>\n"
             for message in messages
         )
-        return rendered + "<|im_start|>assistant\n"
+        return rendered + QWEN3_NO_THINKING_GENERATION_PROMPT
 
 
 class PromptFormatSGLangLiveKVGenerator:
@@ -1430,15 +1431,19 @@ def test_prepare_generated_live_handoff_uses_live_prompt_format_cache_prefix(
             "enable_thinking": False,
         }
     ]
-    assert PromptFormatTokenizer.seen_templates[0][0]["role"] == "system"
-    assert PromptFormatTokenizer.seen_templates[0][1]["role"] == "user"
-    assert all(
-        text.startswith("<|im_start|>system")
-        for text in PromptFormatTokenizer.seen_texts
+    live_request = public_sglang_smoke.build_live_server_check_request(
+        model_id=CACHET_MODEL_ID, use_cache_arm=True
     )
-    assert not any(
-        text.startswith("Benchmark:") for text in PromptFormatTokenizer.seen_texts
-    )
+    assert [
+        message["role"] for message in PromptFormatTokenizer.seen_templates[0]
+    ] == ["user"]
+    assert PromptFormatTokenizer.seen_texts[:2] == [
+        live_request.cache_prefix_text,
+        live_request.logical_prompt_text.removesuffix(
+            "<|im_start|>assistant\n"
+        )
+        + QWEN3_NO_THINKING_GENERATION_PROMPT,
+    ]
     generation = json.loads(
         config.live_handoff_generation_path.read_text(encoding="utf-8")
     )
@@ -2543,10 +2548,6 @@ def test_run_sglang_live_benchmark_writes_repeat_measurements(
             model_id=SERVED_MODEL_NAME,
             hardware_target=live_config.hardware_target,
             use_cache_arm=cache_arm,
-            prompt_format=public_sglang_smoke._live_check_request_prompt_format(
-                live_config.prompt_format,
-                request_mode=live_config.request_mode,
-            ),
             kv_transfer_params=(
                 live_config.kv_transfer_params if cache_arm else None
             ),
@@ -3679,41 +3680,36 @@ def test_probe_sglang_import_requires_request_metadata_bridge(monkeypatch, tmp_p
     assert record["error_type"] == "SGLangRequestMetadataBridgeUnavailable"
 
 
-def test_sglang_live_benchmark_prompt_parts_wrap_qwen3_chat_completion_prompts(tmp_path):
-    from document_kv_cache.benchmarks import BenchmarkExample, build_prompt_parts
-
-    example = BenchmarkExample(
-        example_id="bio-1",
-        dataset="biography",
-        documents=(
-            SourceDocument.from_text(
-                document_id="doc-1", text="Ada Lovelace wrote notes."
-            ),
-        ),
-        query="Who wrote the notes?",
+@pytest.mark.parametrize("request_mode", ["completion", "chat"])
+def test_sglang_prepared_live_benchmark_serves_the_quality_v2_prompt(
+    tmp_path, request_mode
+):
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-prepared-v1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=write_prepared_sglang_v1_datasets(tmp_path / "prepared"),
+        live_benchmark_repeats=1,
+        live_check_prompt_format="qwen3_chat",
+        live_check_request_mode=request_mode,
     )
-    plain = build_prompt_parts(example)
 
-    def config(**overrides):
-        return SGLangSmokeBenchmarkConfig(
-            benchmark_id="sglang-1",
-            output_dir=tmp_path / "out",
-            baseline_only=True,
-            live_check_prompt_format="qwen3_chat",
-            **overrides,
-        )
-
-    wrapped = public_sglang_smoke._sglang_live_benchmark_prompt_parts(
-        config(live_check_request_mode="completion"), example
+    pairs = public_sglang_smoke._sglang_live_benchmark_request_pairs(config)
+    factory = public_sglang_smoke._sglang_live_benchmark_chat_messages_factory(
+        config, prompt_text_mode="logical"
     )
-    assert wrapped.system_prompt.startswith("<|im_start|>system\n")
-    assert wrapped.system_prompt.endswith(plain.system_prompt)
-    assert wrapped.document_context == plain.document_context
-    assert wrapped.user_prompt.endswith("<|im_start|>assistant\n")
 
-    assert (
-        public_sglang_smoke._sglang_live_benchmark_prompt_parts(
-            config(live_check_request_mode="chat"), example
-        )
-        == plain
-    )
+    assert [pair[0].example.dataset for pair in pairs] == list(SUPPORTED_V1_DATASETS)
+    for baseline, cache in pairs:
+        expected = quality_v2_prompt_parts(baseline.example)
+        assert baseline.prompt_parts == expected
+        assert cache.prompt_parts == expected
+        if request_mode == "chat":
+            assert factory is not None
+            rendered = "".join(
+                f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>\n"
+                for message in factory(baseline)
+            )
+            assert rendered + "<|im_start|>assistant\n" == baseline.logical_prompt_text
+        else:
+            assert factory is None

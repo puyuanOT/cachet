@@ -31,6 +31,17 @@ from document_kv_cache.live_server import (
     main,
     run_openai_compatible_live_check,
 )
+from document_kv_cache.quality_v2 import quality_v2_prompt_parts
+
+QWEN3_ASSISTANT_OPEN = "<|im_end|>\n<|im_start|>assistant\n"
+
+
+def render_qwen3_chat_template(messages) -> str:
+    rendered = "".join(
+        f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>\n"
+        for message in messages
+    )
+    return rendered + "<|im_start|>assistant\n"
 
 
 class FakeEngine:
@@ -107,14 +118,14 @@ def test_build_live_server_check_request_defaults_to_baseline_full_prompt_contra
     )
 
 
-def test_build_live_server_check_request_can_use_qwen3_chat_prompt_format():
-    request = build_live_server_check_request(
-        prompt_format="qwen3_chat", use_cache_arm=True
-    )
+def test_build_live_server_check_request_sends_the_quality_v2_chat_turn():
+    request = build_live_server_check_request(use_cache_arm=True)
 
-    assert request.logical_prompt_text.startswith("<|im_start|>system\n")
-    assert request.logical_prompt_text.rstrip().endswith("<|im_start|>assistant")
-    assert "<|im_start|>user" in request.cache_prefix_text
+    assert request.prompt_parts == quality_v2_prompt_parts(request.example)
+    assert request.logical_prompt_text.startswith("<|im_start|>user\n")
+    assert request.logical_prompt_text.endswith(QWEN3_ASSISTANT_OPEN)
+    assert "<|im_start|>system" not in request.logical_prompt_text
+    assert request.cache_prefix_text.startswith("<|im_start|>user\n")
     assert "<|im_end|>\n<|im_start|>assistant" in request.cache_suffix_text
     assert DEFAULT_LIVE_CHECK_ANSWER in request.cache_prefix_text
     assert DEFAULT_LIVE_CHECK_ANSWER not in request.cache_suffix_text
@@ -329,10 +340,25 @@ def test_chat_qwen_live_check_uses_plain_request_and_records_chat_mode():
         engine=engine,
     )
 
-    assert engine.requests[0].logical_prompt_text.startswith("Benchmark:")
-    assert not engine.requests[0].logical_prompt_text.startswith("<|im_start|>system")
+    request = engine.requests[0]
+    assert request.prompt_parts == quality_v2_prompt_parts(request.example)
     assert result.to_record()["request_mode"] == "chat"
     assert result.to_record()["prompt_format"] == "qwen3_chat"
+
+
+def test_chat_qwen_live_check_messages_render_the_quality_v2_prompt():
+    config = LiveServerCheckConfig(
+        base_url="http://localhost:8000",
+        request_mode="chat",
+        prompt_format="qwen3_chat",
+    )
+    request = build_live_server_check_request()
+    factory = public_live_server._live_check_chat_messages_factory(config)
+
+    assert factory is not None
+    messages = factory(request)
+    assert [message["role"] for message in messages] == ["user"]
+    assert render_qwen3_chat_template(messages) == request.logical_prompt_text
 
 
 def test_live_server_check_config_rejects_invalid_kv_transfer_transport():

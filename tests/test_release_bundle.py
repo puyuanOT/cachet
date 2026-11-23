@@ -26,7 +26,6 @@ from document_kv_cache.benchmark_runner import (
 )
 from document_kv_cache.benchmarks import (
     CACHE_REUSE_ARM,
-    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
     DOCUMENT_KV_ARTIFACT_ID_PARAM,
     DOCUMENT_KV_CACHE_METHOD_PARAM,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
@@ -91,6 +90,7 @@ from document_kv_cache.native_probe_factories import (
     native_probe_adapter_contract_to_record,
     native_probe_runtime_contract_to_record,
 )
+from document_kv_cache.quality_v2 import QUALITY_V2_PROMPT_TEMPLATE_VERSION
 from document_kv_cache.release_bundle import (
     RELEASE_BUNDLE_MANIFEST_FILENAME,
     RELEASE_BUNDLE_RECORD_TYPE,
@@ -4111,7 +4111,7 @@ def _gated_v1_record_json(*, suite_id: str, hardware_target: str) -> str:
         tokenizer_id="qwen3:4b-instruct",
         tokenizer_revision="tokenizer-revision",
         lora_id="none",
-        prompt_template_version=DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+        prompt_template_version=QUALITY_V2_PROMPT_TEMPLATE_VERSION,
         layout_version="v1",
         kv_dtype="float16",
         block_size=16,

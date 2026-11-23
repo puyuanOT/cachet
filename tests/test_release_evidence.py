@@ -13,7 +13,6 @@ from document_kv_cache.artifact_identity import ArtifactIdentity
 from document_kv_cache.benchmark_gates import BENCHMARK_EVIDENCE_GATE_RECORD_TYPE, CacheStateAttestation
 from document_kv_cache.benchmarks import (
     CACHE_REUSE_ARM,
-    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
     DOCUMENT_KV_ARTIFACT_ID_PARAM,
     DOCUMENT_KV_CACHE_METHOD_PARAM,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
@@ -50,6 +49,7 @@ from document_kv_cache.benchmark_runner import (
     benchmark_run_result_to_record,
     run_benchmark_suite,
 )
+from document_kv_cache.quality_v2 import QUALITY_V2_PROMPT_TEMPLATE_VERSION
 from document_kv_cache.release_evidence import (
     RELEASE_EVIDENCE_RECORD_TYPE,
     RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE,
@@ -2714,7 +2714,7 @@ def _gated_v1_record_json(
         tokenizer_id="qwen3:4b-instruct",
         tokenizer_revision="tokenizer-revision",
         lora_id="none",
-        prompt_template_version=DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+        prompt_template_version=QUALITY_V2_PROMPT_TEMPLATE_VERSION,
         layout_version="v1",
         kv_dtype="float16",
         block_size=16,

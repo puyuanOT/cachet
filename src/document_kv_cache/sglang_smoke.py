@@ -34,7 +34,6 @@ from document_kv_cache.benchmark_runner import (
 from document_kv_cache.benchmarks import (
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
-    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
@@ -72,8 +71,8 @@ from document_kv_cache.live_server import (
     LiveServerCheckConfig,
     LiveServerCheckResult,
     _live_check_chat_messages,
-    _live_check_prompt_parts,
     _live_check_request_prompt_format,
+    _qwen3_chat_user_content,
     build_live_server_check_request,
     live_check_kv_transfer_params,
     run_openai_compatible_live_check,
@@ -89,6 +88,7 @@ from document_kv_cache.openai_compatible import (
     OpenAICompatibleRequestMode,
     PromptTextMode,
 )
+from document_kv_cache.quality_v2 import QUALITY_V2_PROMPT_TEMPLATE_VERSION
 from document_kv_cache.serving_env import (
     SGLANG_DEPENDENCY_CONSTRAINTS,
     SGLANG_SERVING_ENVIRONMENT_PROFILE,
@@ -1689,10 +1689,6 @@ def _generate_live_handoff_inputs(
         model_id=CACHET_MODEL_ID,
         hardware_target=config.hardware_target,
         use_cache_arm=True,
-        prompt_format=_live_check_request_prompt_format(
-            config.live_check_prompt_format,
-            request_mode=config.live_check_request_mode,
-        ),
     )
     source_document = _live_handoff_cache_source_document(
         live_request, prefix=LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX
@@ -1746,7 +1742,7 @@ def _generate_live_handoff_inputs(
     cache_config = CacheBuildConfig(
         model_id=layout.model_id,
         lora_id=layout.lora_id,
-        prompt_template_version=DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+        prompt_template_version=QUALITY_V2_PROMPT_TEMPLATE_VERSION,
         dtype=layout.dtype,
         layout_version=layout.layout_version,
         storage_layout=layout.storage_layout,
@@ -1894,12 +1890,18 @@ def _render_qwen3_chat_live_handoff_prompt(
         raise RuntimeError(
             "SGLang chat live handoff prompt parts do not form a stable full prompt"
         )
-    user_content_start = rendered.find(logical_prompt_text)
+    user_content = _qwen3_chat_user_content(logical_prompt_text)
+    prefix_content = _qwen3_chat_user_content(prefix_text)
+    if not user_content.startswith(prefix_content):
+        raise RuntimeError(
+            "SGLang chat live handoff cache prefix does not lead the user turn"
+        )
+    user_content_start = rendered.find(user_content)
     if user_content_start < 0:
         raise RuntimeError(
             "SGLang chat live handoff rendered prompt does not contain the logical prompt text"
         )
-    rendered_prefix = rendered[: user_content_start + len(prefix_text)]
+    rendered_prefix = rendered[: user_content_start + len(prefix_content)]
     if not rendered.startswith(rendered_prefix) or len(rendered_prefix) >= len(
         rendered
     ):
@@ -2507,7 +2509,7 @@ def _sglang_live_benchmark_request_pairs(
     )
     pairs = []
     for example in suite.examples:
-        prompt_parts = _sglang_live_benchmark_prompt_parts(config, example)
+        prompt_parts = build_prompt_parts(example)
         baseline = BenchmarkEngineRequest(
             suite_id=suite.suite_id,
             model_id=SERVED_MODEL_NAME,
@@ -2528,19 +2530,6 @@ def _sglang_live_benchmark_request_pairs(
         )
         pairs.append((baseline, cache))
     return tuple(pairs)
-
-
-def _sglang_live_benchmark_prompt_parts(
-    config: SGLangSmokeBenchmarkConfig,
-    example: BenchmarkExample,
-) -> BenchmarkPromptParts:
-    prompt_format = _live_check_request_prompt_format(
-        config.live_check_prompt_format,
-        request_mode=config.live_check_request_mode,
-    )
-    if prompt_format == "plain":
-        return build_prompt_parts(example)
-    return _live_check_prompt_parts(example, prompt_format=prompt_format)
 
 
 def _request_id_from_kv_transfer_params(params: Mapping[str, Any]) -> str | None:
@@ -2731,10 +2720,6 @@ def _build_sglang_live_benchmark_request(
         model_id=SERVED_MODEL_NAME,
         hardware_target=config.hardware_target,
         use_cache_arm=use_cache_arm,
-        prompt_format=_live_check_request_prompt_format(
-            config.live_check_prompt_format,
-            request_mode=config.live_check_request_mode,
-        ),
         kv_transfer_params=(
             sglang_live_kv_transfer_params(config) if use_cache_arm else None
         ),

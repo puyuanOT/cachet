@@ -36,7 +36,6 @@ from hashlib import sha256
 from types import MappingProxyType
 from typing import Any
 
-from document_kv_cache._benchmark_datasets import _example_from_record
 from document_kv_cache.benchmarks import (
     HOTPOTQA_SCORER_VERSION,
     MUSIQUE_SCORER_VERSION,
@@ -254,9 +253,7 @@ def quality_v2_scorer_registry() -> DatasetScorerRegistry:
     )
     hotpotqa = DatasetScorer(
         scorer_id="hotpotqa.official_answer",
-        version=HOTPOTQA_SCORER_VERSION.split("+final_answer_v1@")[0]
-        + "+"
-        + _PARSER_SUFFIX,
+        version=f"{HOTPOTQA_SCORER_VERSION}+{_PARSER_SUFFIX}",
         metric_names=("exact_match", "f1"),
         metric_specs=(
             DatasetMetricSpec("exact_match", max_regression=QUALITY_V2_MAX_REGRESSION),
@@ -268,9 +265,7 @@ def quality_v2_scorer_registry() -> DatasetScorerRegistry:
     )
     musique = DatasetScorer(
         scorer_id="musique.official_answer",
-        version=MUSIQUE_SCORER_VERSION.split("+final_answer_v1@")[0]
-        + "+"
-        + _PARSER_SUFFIX,
+        version=f"{MUSIQUE_SCORER_VERSION}+{_PARSER_SUFFIX}",
         metric_names=("answer_em", "answer_f1"),
         metric_specs=(
             DatasetMetricSpec("answer_em", max_regression=QUALITY_V2_MAX_REGRESSION),
@@ -347,6 +342,9 @@ def build_quality_v2_niah_records(
     requested depth.  ``count_tokens`` must count tokens of the full chat-framed
     prompt text; each prompt lands in ``[target - 384, target]`` tokens.
     """
+
+    # _benchmark_datasets imports _benchmark_models, which imports this module.
+    from document_kv_cache._benchmark_datasets import _example_from_record
 
     pool = tuple(
         dict.fromkeys(
@@ -547,7 +545,10 @@ def summarize_quality_v2_pairs(
             metrics=metrics,
             strict_format_rate={
                 arm: statistics.fmean(
-                    float(extract_single_final_answer(str(row.get("output_text") or "")).valid)
+                    float(
+                        extract_single_final_answer(str(row.get("output_text") or ""))
+                        is not None
+                    )
                     for row in rows
                 )
                 for arm, rows in arms.items()

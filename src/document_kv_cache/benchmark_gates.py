@@ -32,7 +32,6 @@ from document_kv_cache.benchmarks import (
     NIAH_CELL_IDS,
     SUPPORTED_V1_DATASETS,
     AnswerParserFunction,
-    default_dataset_scorer_registry,
     final_answer_measurement_metadata,
 )
 from document_kv_cache.methods import MethodRegistry, default_method_registry
@@ -1037,17 +1036,16 @@ def _scorer_final_answer_parser_identity(
 
 def _registered_answer_parsers() -> dict[tuple[str, ...], AnswerParserFunction]:
     parsers: dict[tuple[str, ...], AnswerParserFunction] = {}
-    for registry in (default_dataset_scorer_registry(), quality_v2_scorer_registry()):
-        for _dataset, scorer in registry.entries:
-            if scorer.answer_parser_function is not None:
-                parsers[
-                    (
-                        scorer.answer_parser_id,
-                        scorer.answer_parser_version,
-                        scorer.answer_parser_plugin_path,
-                        scorer.answer_parser_digest,
-                    )
-                ] = scorer.answer_parser_function
+    for _dataset, scorer in quality_v2_scorer_registry().entries:
+        if scorer.answer_parser_function is not None:
+            parsers[
+                (
+                    scorer.answer_parser_id,
+                    scorer.answer_parser_version,
+                    scorer.answer_parser_plugin_path,
+                    scorer.answer_parser_digest,
+                )
+            ] = scorer.answer_parser_function
     return parsers
 
 

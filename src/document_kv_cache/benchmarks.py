@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import os
 import re
 import statistics
 import string
@@ -35,7 +34,6 @@ from document_kv_cache.workflow import SourceDocument
 SUPPORTED_V1_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 DEFAULT_V1_MODEL_ID = "qwen3:4b-instruct"
 DEFAULT_V1_LORA_ID = "base"
-DEFAULT_V1_PROMPT_TEMPLATE_VERSION = "v2-final-answer"
 BENCHMARK_CACHE_PREFIX_CHUNK_ID = "cache_prefix"
 BENCHMARK_CACHE_ARTIFACT_PREFIX = "cachet"
 BASELINE_PREFILL_ARM = "baseline_prefill"
@@ -50,29 +48,12 @@ DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM = "document_kv.runtime_prefix_text"
 DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM = "document_kv.sglang_hicache_page_keys"
 DOCUMENT_KV_CACHE_METHOD_PARAM = "document_kv.cache_method"
 DOCUMENT_KV_ARTIFACT_ID_PARAM = "document_kv.artifact_id"
-FINAL_ANSWER_CUE = "<final_answer>answer</final_answer>"
-FINAL_ANSWER_PARSER_ID = "cachet.single_final_answer"
-FINAL_ANSWER_PARSER_VERSION = "1"
-FINAL_ANSWER_PARSER_PLUGIN_PATH = (
-    "document_kv_cache.benchmarks:extract_single_final_answer"
-)
 FINAL_ANSWER_PARSER_STATUSES = (
     "ok",
     "missing_block",
     "multiple_or_malformed_blocks",
-    "extraneous_text",
-    "nested_block",
     "empty_answer",
 )
-FINAL_ANSWER_PARSER_CONTRACT = (
-    "utf8-trim;case-sensitive-lowercase-tags;whole-output-match;"
-    "exactly-one-nonempty-final_answer-block;no-nested-answer-tags;"
-    "statuses="
-    + ",".join(FINAL_ANSWER_PARSER_STATUSES)
-)
-FINAL_ANSWER_PARSER_DIGEST = sha256(
-    FINAL_ANSWER_PARSER_CONTRACT.encode("utf-8")
-).hexdigest()
 FINAL_ANSWER_METADATA_PREFIX = "cachet.score.final_answer_parser"
 FINAL_ANSWER_EXTRACTED_METADATA_KEY = "cachet.score.extracted_answer"
 FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY = "cachet.score.extracted_answer_sha256"
@@ -83,39 +64,25 @@ FINAL_ANSWER_PARSER_PLUGIN_METADATA_KEY = f"{FINAL_ANSWER_METADATA_PREFIX}.plugi
 FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY = f"{FINAL_ANSWER_METADATA_PREFIX}.digest"
 FINAL_ANSWER_PARSER_VALID_METADATA_KEY = f"{FINAL_ANSWER_METADATA_PREFIX}.valid"
 FINAL_ANSWER_PARSER_STATUS_METADATA_KEY = f"{FINAL_ANSWER_METADATA_PREFIX}.status"
-DEFAULT_V1_PROMPT_PLUGIN_PATH = "document_kv_cache.benchmarks:_default_prompt_parts"
 BIOGRAPHY_TITLE_NORMALIZER_ID = "nfkc_casefold_ws_terminal_punctuation_v2"
-BIOGRAPHY_SCORER_VERSION = (
-    f"biography_entity_identification_v2+{BIOGRAPHY_TITLE_NORMALIZER_ID}+"
-    f"final_answer_v1@"
-    f"{FINAL_ANSWER_PARSER_DIGEST[:12]}"
-)
-HOTPOTQA_SCORER_VERSION = (
-    f"hotpot_evaluate_v1@3635853403a8+final_answer_v1@"
-    f"{FINAL_ANSWER_PARSER_DIGEST[:12]}"
-)
+# Official answer-scorer pins; each registered scorer version appends the identity
+# of the answer parser whose extracted answer it scores.
+HOTPOTQA_SCORER_VERSION = "hotpot_evaluate_v1@3635853403a8"
 MUSIQUE_OFFICIAL_COMMIT = "922ac98f19a201998dbdae6d7f2887a5258dbdeb"
 MUSIQUE_ANSWER_SCORER_SHA256 = (
     "10368f619b4d5ef5d83748c05a96c0afd332a14ab5c010740c98d58dfaefe974"
 )
 MUSIQUE_SCORER_VERSION = (
     f"evaluate_v1.0@{MUSIQUE_OFFICIAL_COMMIT}+answer.py@"
-    f"{MUSIQUE_ANSWER_SCORER_SHA256[:12]}+final_answer_v1@"
-    f"{FINAL_ANSWER_PARSER_DIGEST[:12]}"
-)
-NIAH_SCORER_VERSION = (
-    f"cachet_niah_grid_v1+final_answer_v1@{FINAL_ANSWER_PARSER_DIGEST[:12]}"
+    f"{MUSIQUE_ANSWER_SCORER_SHA256[:12]}"
 )
 NIAH_CELL_IDS = tuple(
     f"niah-{context_tokens // 1024}k-depth-{round(position * 100):02d}"
     for context_tokens in (8192, 16384, 32768)
     for position in (0.1, 0.5, 0.9)
 )
-# Controls whether the system/task guidance prompt is placed at the start of the
-# cached document prefix (baked into the cached KV) or after the documents so it is
-# recomputed online. "end" moves the guidance out of the cached KV, so it is prefilled
-# online with full attention over the injected document KV.
-CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV = "CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION"
+# "start" bakes the task guidance into the cached document prefix; "end" places it
+# after the documents so it is prefilled online over the injected document KV.
 SYSTEM_PROMPT_POSITIONS = ("start", "end")
 DEFAULT_SYSTEM_PROMPT_POSITION = "start"
 BENCHMARK_ARM_IMPLEMENTATION_KINDS = ("baseline", "cachet", "upstream", "external")
@@ -143,7 +110,6 @@ __all__ = [
     "SUPPORTED_V1_HARDWARE_TARGETS",
     "DEFAULT_V1_MODEL_ID",
     "DEFAULT_V1_LORA_ID",
-    "DEFAULT_V1_PROMPT_TEMPLATE_VERSION",
     "BENCHMARK_CACHE_PREFIX_CHUNK_ID",
     "BENCHMARK_CACHE_ARTIFACT_PREFIX",
     "DEFAULT_HARDWARE_TARGET",
@@ -159,20 +125,12 @@ __all__ = [
     "DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM",
     "DOCUMENT_KV_CACHE_METHOD_PARAM",
     "DOCUMENT_KV_ARTIFACT_ID_PARAM",
-    "CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV",
     "SYSTEM_PROMPT_POSITIONS",
     "DEFAULT_SYSTEM_PROMPT_POSITION",
     "BENCHMARK_ARM_IMPLEMENTATION_KINDS",
-    "resolve_system_prompt_position",
     "BenchmarkDatasetSpec",
     "BenchmarkPromptParts",
-    "FINAL_ANSWER_CUE",
-    "FINAL_ANSWER_PARSER_ID",
-    "FINAL_ANSWER_PARSER_VERSION",
-    "FINAL_ANSWER_PARSER_PLUGIN_PATH",
     "FINAL_ANSWER_PARSER_STATUSES",
-    "FINAL_ANSWER_PARSER_CONTRACT",
-    "FINAL_ANSWER_PARSER_DIGEST",
     "FINAL_ANSWER_EXTRACTED_METADATA_KEY",
     "FINAL_ANSWER_EXTRACTED_SHA256_METADATA_KEY",
     "FINAL_ANSWER_NO_EXTRACTION_VALUE",
@@ -182,13 +140,11 @@ __all__ = [
     "FINAL_ANSWER_PARSER_DIGEST_METADATA_KEY",
     "FINAL_ANSWER_PARSER_VALID_METADATA_KEY",
     "FINAL_ANSWER_PARSER_STATUS_METADATA_KEY",
-    "BIOGRAPHY_SCORER_VERSION",
     "BIOGRAPHY_TITLE_NORMALIZER_ID",
     "HOTPOTQA_SCORER_VERSION",
     "MUSIQUE_OFFICIAL_COMMIT",
     "MUSIQUE_ANSWER_SCORER_SHA256",
     "MUSIQUE_SCORER_VERSION",
-    "NIAH_SCORER_VERSION",
     "NIAH_CELL_IDS",
     "BenchmarkExample",
     "BenchmarkSuite",
@@ -208,15 +164,12 @@ __all__ = [
     "document_kv_cache_arm",
     "method_benchmark_arm",
     "require_runnable_cachet_benchmark_arm",
-    "default_dataset_scorer_registry",
     "diagnostic_answer_scores",
     "extract_single_final_answer",
     "final_answer_measurement_metadata",
-    "biography_entity_identification_scores",
     "normalize_biography_title",
     "hotpotqa_official_answer_scores",
     "musique_official_answer_scores",
-    "niah_exact_value_scores",
     "niah_cell_identity",
     "v1_dataset_specs",
     "dataset_spec",
@@ -271,16 +224,16 @@ AnswerParserFunction = Callable[[str], "FinalAnswerExtraction"]
 
 @dataclass(frozen=True, slots=True)
 class FinalAnswerExtraction:
-    """Auditable result of the publication answer-output parser."""
+    """Auditable result of a scorer's versioned answer-output parser."""
 
     raw_output: str
     extracted_answer: str
     valid: bool
     status: str
-    parser_id: str = FINAL_ANSWER_PARSER_ID
-    parser_version: str = FINAL_ANSWER_PARSER_VERSION
-    parser_plugin_path: str = FINAL_ANSWER_PARSER_PLUGIN_PATH
-    parser_digest: str = FINAL_ANSWER_PARSER_DIGEST
+    parser_id: str
+    parser_version: str
+    parser_plugin_path: str
+    parser_digest: str
 
     def __post_init__(self) -> None:
         if not isinstance(self.raw_output, str):
@@ -311,33 +264,28 @@ class FinalAnswerExtraction:
             raise ValueError("parser_digest must be a lowercase SHA-256 digest")
 
 
-def extract_single_final_answer(output_text: str) -> FinalAnswerExtraction:
-    """Parse exactly one whole-output ``<final_answer>`` block.
+def extract_single_final_answer(output_text: str) -> str | None:
+    """Return the answer when the whole output is one ``<final_answer>`` block.
 
-    The tag spelling is intentionally case-sensitive. Any prose outside the block,
-    empty content, nested answer tags, duplicate blocks, or malformed tags is an
-    invalid answer and therefore receives zero for every registered metric.
+    This is the strict response-format check reported beside answer quality; it
+    is not a scorer's answer parser. The tag spelling is case-sensitive, and any
+    prose outside the block, empty content, nested answer tags, duplicate
+    blocks, or malformed tags returns ``None``.
     """
 
     if not isinstance(output_text, str):
         raise TypeError("output_text must be a string")
     open_tag = "<final_answer>"
     close_tag = "</final_answer>"
-    open_count = output_text.count(open_tag)
-    close_count = output_text.count(close_tag)
-    if open_count == 0 and close_count == 0:
-        return FinalAnswerExtraction(output_text, "", False, "missing_block")
-    if open_count != 1 or close_count != 1:
-        return FinalAnswerExtraction(output_text, "", False, "multiple_or_malformed_blocks")
+    if output_text.count(open_tag) != 1 or output_text.count(close_tag) != 1:
+        return None
     stripped = output_text.strip()
     if not stripped.startswith(open_tag) or not stripped.endswith(close_tag):
-        return FinalAnswerExtraction(output_text, "", False, "extraneous_text")
+        return None
     answer = stripped[len(open_tag) : -len(close_tag)].strip()
-    if "<final_answer" in answer or "</final_answer" in answer:
-        return FinalAnswerExtraction(output_text, "", False, "nested_block")
-    if not answer:
-        return FinalAnswerExtraction(output_text, "", False, "empty_answer")
-    return FinalAnswerExtraction(output_text, answer, True, "ok")
+    if not answer or "<final_answer" in answer or "</final_answer" in answer:
+        return None
+    return answer
 
 
 def final_answer_measurement_metadata(
@@ -448,21 +396,15 @@ class DatasetScorer:
                 "prompt_template_version",
             )
         parser_function = self.answer_parser_function
-        if self.publication_approved and parser_function is None:
-            parser_function = extract_single_final_answer
-            object.__setattr__(self, "answer_parser_function", parser_function)
         if parser_function is not None:
             if not callable(parser_function):
                 raise TypeError("answer_parser_function must be callable when provided")
-            parser_defaults = {
-                "answer_parser_id": FINAL_ANSWER_PARSER_ID,
-                "answer_parser_version": FINAL_ANSWER_PARSER_VERSION,
-                "answer_parser_plugin_path": FINAL_ANSWER_PARSER_PLUGIN_PATH,
-                "answer_parser_digest": FINAL_ANSWER_PARSER_DIGEST,
-            }
-            for field_name, default in parser_defaults.items():
-                if not getattr(self, field_name):
-                    object.__setattr__(self, field_name, default)
+            for field_name in (
+                "answer_parser_id",
+                "answer_parser_version",
+                "answer_parser_plugin_path",
+                "answer_parser_digest",
+            ):
                 _validate_non_empty_str(getattr(self, field_name), field_name)
             if len(self.answer_parser_digest) != 64 or any(
                 character not in "0123456789abcdef"
@@ -486,23 +428,14 @@ class DatasetScorer:
         if self.publication_approved:
             _validate_non_empty_str(self.plugin_path, "plugin_path")
             if self.prompt_function is None:
-                if not self.prompt_plugin_path:
-                    object.__setattr__(
-                        self,
-                        "prompt_plugin_path",
-                        DEFAULT_V1_PROMPT_PLUGIN_PATH,
-                    )
-                if not self.prompt_template_version:
-                    object.__setattr__(
-                        self,
-                        "prompt_template_version",
-                        DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
-                    )
-            _validate_non_empty_str(self.prompt_plugin_path, "prompt_plugin_path")
-            _validate_non_empty_str(
-                self.prompt_template_version,
-                "prompt_template_version",
-            )
+                raise ValueError(
+                    "publication-approved scorers must declare a versioned prompt_function"
+                )
+            if parser_function is None:
+                raise ValueError(
+                    "publication-approved scorers must declare a versioned "
+                    "answer_parser_function"
+                )
         object.__setattr__(self, "metric_names", names)
         object.__setattr__(self, "metric_specs", specs)
 
@@ -539,7 +472,7 @@ class DatasetScorer:
 
     def prompt_parts(self, example: "BenchmarkExample") -> "BenchmarkPromptParts":
         if self.prompt_function is None:
-            return _default_prompt_parts(example)
+            return build_prompt_parts(example)
         prompt_parts = self.prompt_function(example)
         if not isinstance(prompt_parts, BenchmarkPromptParts):
             raise TypeError("prompt_function must return BenchmarkPromptParts")
@@ -630,91 +563,6 @@ def diagnostic_answer_scores(context: DatasetScoreContext) -> Mapping[str, float
         "exact_match": float(exact_match(context.output_text, expected_answer)),
         "answer_found": float(answer_found(context.output_text, expected_answer)),
     }
-
-
-def default_dataset_scorer_registry() -> DatasetScorerRegistry:
-    shared: dict[str, Any] = {
-        "publication_approved": True,
-        "prompt_function": _default_prompt_parts,
-        "prompt_plugin_path": DEFAULT_V1_PROMPT_PLUGIN_PATH,
-        "prompt_template_version": DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
-        "answer_parser_function": extract_single_final_answer,
-        "answer_parser_id": FINAL_ANSWER_PARSER_ID,
-        "answer_parser_version": FINAL_ANSWER_PARSER_VERSION,
-        "answer_parser_plugin_path": FINAL_ANSWER_PARSER_PLUGIN_PATH,
-        "answer_parser_digest": FINAL_ANSWER_PARSER_DIGEST,
-    }
-    biography = DatasetScorer(
-        scorer_id="cachet.biography_entity_identification",
-        version=BIOGRAPHY_SCORER_VERSION,
-        metric_names=("exact_match",),
-        metric_specs=(DatasetMetricSpec("exact_match", max_regression=1.0),),
-        score_function=biography_entity_identification_scores,
-        plugin_path=(
-            "document_kv_cache.benchmarks:biography_entity_identification_scores"
-        ),
-        **shared,
-    )
-    hotpotqa = DatasetScorer(
-        scorer_id="hotpotqa.official_answer",
-        version=HOTPOTQA_SCORER_VERSION,
-        metric_names=("exact_match", "f1"),
-        metric_specs=(
-            DatasetMetricSpec("exact_match", max_regression=1.0),
-            DatasetMetricSpec("f1", max_regression=1.0),
-        ),
-        score_function=hotpotqa_official_answer_scores,
-        plugin_path=(
-            "document_kv_cache.benchmarks:hotpotqa_official_answer_scores"
-        ),
-        **shared,
-    )
-    musique = DatasetScorer(
-        scorer_id="musique.official_answer",
-        version=MUSIQUE_SCORER_VERSION,
-        metric_names=("answer_em", "answer_f1"),
-        metric_specs=(
-            DatasetMetricSpec("answer_em", max_regression=1.0),
-            DatasetMetricSpec("answer_f1", max_regression=1.0),
-        ),
-        score_function=musique_official_answer_scores,
-        plugin_path="document_kv_cache.benchmarks:musique_official_answer_scores",
-        **shared,
-    )
-    niah = DatasetScorer(
-        scorer_id="cachet.niah_exact_value",
-        version=NIAH_SCORER_VERSION,
-        metric_names=("accuracy",),
-        metric_specs=(DatasetMetricSpec("accuracy", max_regression=1.0),),
-        score_function=niah_exact_value_scores,
-        plugin_path="document_kv_cache.benchmarks:niah_exact_value_scores",
-        **shared,
-    )
-    return DatasetScorerRegistry(
-        (
-            ("biography", biography),
-            ("hotpotqa", hotpotqa),
-            ("musique", musique),
-            ("niah", niah),
-        )
-    )
-
-
-def biography_entity_identification_scores(
-    context: DatasetScoreContext,
-) -> Mapping[str, float]:
-    """Normalized-title exact match for Cachet's versioned biography task."""
-
-    if not isinstance(context, DatasetScoreContext):
-        raise TypeError("context must be a DatasetScoreContext")
-    if not context.references:
-        return MappingProxyType({"exact_match": 0.0})
-    prediction = normalize_biography_title(context.output_text)
-    exact = any(
-        prediction == normalize_biography_title(reference)
-        for reference in context.references
-    )
-    return MappingProxyType({"exact_match": float(exact)})
 
 
 def normalize_biography_title(value: str) -> str:
@@ -863,25 +711,6 @@ def niah_cell_identity(context_token_target: int, needle_position: float) -> str
     if matched is None:
         raise ValueError("needle_position must be one of 0.1, 0.5, or 0.9")
     return f"niah-{context_token_target // 1024}k-depth-{round(matched * 100):02d}"
-
-
-def niah_exact_value_scores(
-    context: DatasetScoreContext,
-) -> Mapping[str, float]:
-    """Case-sensitive exact requested-value accuracy for the frozen NIAH grid."""
-
-    if not isinstance(context, DatasetScoreContext):
-        raise TypeError("context must be a DatasetScoreContext")
-    cell_id = context.metadata.get("niah_cell_id")
-    if cell_id is not None and cell_id not in NIAH_CELL_IDS:
-        raise ValueError(
-            "niah_cell_id metadata must identify a recognized publication grid cell"
-        )
-    if not context.references:
-        return MappingProxyType({"accuracy": 0.0})
-    prediction = context.output_text.strip()
-    expected = context.references[0].strip()
-    return MappingProxyType({"accuracy": float(prediction == expected)})
 
 
 def _hotpotqa_normalize_answer(value: str) -> str:
@@ -1559,45 +1388,26 @@ def dataset_spec(dataset: str) -> BenchmarkDatasetSpec:
     return _V1_DATASET_SPECS[dataset]
 
 
-def resolve_system_prompt_position() -> str:
-    """Resolve the system-prompt placement from the environment (default ``start``)."""
-
-    value = os.environ.get(
-        CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV, DEFAULT_SYSTEM_PROMPT_POSITION
-    ).strip().lower()
-    if value not in SYSTEM_PROMPT_POSITIONS:
-        raise ValueError(
-            f"{CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV} must be one of "
-            f"{SYSTEM_PROMPT_POSITIONS}; got {value!r}"
-        )
-    return value
-
-
 def build_prompt_parts(
     example: BenchmarkExample,
     *,
     scorer: DatasetScorer | None = None,
 ) -> BenchmarkPromptParts:
+    """Return the scorer's prompt sections, or the Quality v2 prompt without one."""
+
     if scorer is not None:
         if not isinstance(scorer, DatasetScorer):
             raise TypeError("scorer must be DatasetScorer when provided")
         return scorer.prompt_parts(example)
-    return _default_prompt_parts(example)
-
-
-def _default_prompt_parts(example: BenchmarkExample) -> BenchmarkPromptParts:
     if example.dataset not in SUPPORTED_V1_DATASETS:
         raise ValueError(
             f"Dataset {example.dataset!r} requires a registered scorer with a "
             "versioned prompt_function"
         )
-    spec = dataset_spec(example.dataset)
-    return BenchmarkPromptParts(
-        system_prompt=_system_prompt(spec),
-        document_context=format_document_context(example.documents),
-        user_prompt=_user_prompt(example, spec),
-        system_prompt_position=resolve_system_prompt_position(),
-    )
+    # quality_v2 builds on this module, so its prompt is resolved at call time.
+    from document_kv_cache.quality_v2 import quality_v2_prompt_parts
+
+    return quality_v2_prompt_parts(example)
 
 
 def build_prefill_prompt(
@@ -1747,7 +1557,7 @@ def benchmark_cache_request(
     *,
     model_id: str = DEFAULT_V1_MODEL_ID,
     lora_id: str = DEFAULT_V1_LORA_ID,
-    prompt_template_version: str = DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+    prompt_template_version: str | None = None,
     request_id: str | None = None,
     task_id: str | None = None,
     document_id: str | None = None,
@@ -1760,9 +1570,17 @@ def benchmark_cache_request(
 
     With ``segment_per_document`` the request selects the N per-document prefix chunks
     (in order) so ``CachePlanner`` emits an N-segment contiguous plan. Chunk ids must
-    match :func:`benchmark_cache_source_document`.
+    match :func:`benchmark_cache_source_document`. ``prompt_template_version``
+    defaults to the scorer's prompt template version, or the Quality v2 one.
     """
 
+    if prompt_template_version is None:
+        if scorer is not None and scorer.prompt_template_version:
+            prompt_template_version = scorer.prompt_template_version
+        else:
+            from document_kv_cache.quality_v2 import QUALITY_V2_PROMPT_TEMPLATE_VERSION
+
+            prompt_template_version = QUALITY_V2_PROMPT_TEMPLATE_VERSION
     benchmark_example = _benchmark_example(example)
     resolved_document_id = document_id or benchmark_cache_document_id(benchmark_example, prefix=prefix)
     resolved_request_id = request_id or benchmark_cache_artifact_stem(benchmark_example, prefix=prefix)
@@ -2208,26 +2026,6 @@ _V1_DATASET_SPECS: Mapping[str, BenchmarkDatasetSpec] = {
         answer_instruction="Return the exact needle or requested value from the context.",
     ),
 }
-
-
-def _system_prompt(spec: BenchmarkDatasetSpec) -> str:
-    return _join_sections(
-        f"Benchmark: {spec.display_name}",
-        spec.task_instruction,
-        "Use only the supplied document context. If the answer is absent, say you do not know.",
-        (
-            "Your entire response must contain exactly one non-empty block of the "
-            "form <final_answer>answer</final_answer>, with no text outside it."
-        ),
-    )
-
-
-def _user_prompt(example: BenchmarkExample, spec: BenchmarkDatasetSpec) -> str:
-    return _join_sections(
-        f"Question: {example.query}",
-        spec.answer_instruction,
-        f"Required response form: {FINAL_ANSWER_CUE}",
-    )
 
 
 def _format_document(document: SourceDocument) -> str:

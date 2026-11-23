@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+from pathlib import Path
 
 import pytest
 
@@ -34,6 +35,14 @@ from document_kv_cache.quality_v2 import (
     validate_quality_v2_report_record,
 )
 
+SEALED_QUALITY_V2_REPORT = (
+    Path(__file__).resolve().parents[1]
+    / "benchmarks"
+    / "appendix"
+    / "vllm-0300-quality-v2"
+    / "quality-v2-report.json"
+)
+
 
 def _example(dataset: str = "hotpotqa"):
     return _example_from_record(
@@ -62,7 +71,7 @@ class TestFirstFinalAnswerParser:
         )
         extraction = extract_first_final_answer(output)
         assert (extraction.status, extraction.extracted_answer, extraction.valid) == ("ok", "Alpha", True)
-        assert extract_single_final_answer(output).valid is False
+        assert extract_single_final_answer(output) is None
 
     def test_statuses(self) -> None:
         assert extract_first_final_answer("Alpha").status == "missing_block"
@@ -173,6 +182,10 @@ class TestScorers:
         assert record["headline_datasets"] == ["hotpotqa", "musique", "niah"]
         assert record["diagnostic_datasets"] == ["biography"]
         assert record == quality_v2_protocol_record()
+
+    def test_protocol_record_matches_the_sealed_report(self) -> None:
+        report = json.loads(SEALED_QUALITY_V2_REPORT.read_text(encoding="utf-8"))
+        assert report["protocol"] == quality_v2_protocol_record()
 
 
 def _paragraphs(count: int = 1200) -> list[str]:
