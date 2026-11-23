@@ -214,7 +214,10 @@ def test_niah_haystack_paragraphs_are_every_hotpotqa_then_musique_paragraph(tmp_
                     "id": "hp-1",
                     "context": {
                         "title": ["Ada", "Paris"],
-                        "sentences": [["Ada wrote notes.", " She studied engines."], ["Paris is in France."]],
+                        "sentences": [
+                            ["Ada wrote notes.", " She studied engines.", "(1843)"],
+                            ["Paris is in France."],
+                        ],
                     },
                 },
                 {"id": "hp-2", "context": {"title": ["Rome"], "sentences": [["Rome is in Italy."]]}},
@@ -237,7 +240,7 @@ def test_niah_haystack_paragraphs_are_every_hotpotqa_then_musique_paragraph(tmp_
     )
 
     assert list(_niah_haystack_paragraphs(hotpot_path, musique_path)) == [
-        "Ada wrote notes.  She studied engines.",
+        "Ada wrote notes. She studied engines.(1843)",
         "Paris is in France.",
         "Rome is in Italy.",
         "Oslo is in Norway.",

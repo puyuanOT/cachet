@@ -249,6 +249,13 @@ copies. `dataset-source-metadata.json` records the builder, seed, and token
 counter. The staged `biography.jsonl`, `hotpotqa.jsonl`, `musique.jsonl`, and
 `niah.jsonl` files are valid `--input-jsonl` and plan `--raw-dataset` inputs.
 
+Staging the default sources (`hotpotqa/hotpot_qa` distractor validation and
+`voidful/MuSiQue` `musique_ans_v1.0_dev.jsonl`) with the pinned tokenizer
+reproduces the sealed Quality v2 NIAH input: `niah.jsonl` has SHA-256
+`d6c2c9d988e1417c1434cc565602a4b2c4334f87808e96e7eed98caad69f2c39`, as listed
+in the [Quality v2 appendix](../../../benchmarks/appendix/vllm-0300-quality-v2/README.md)
+(verified with `transformers` 5.12.1).
+
 Convert a single raw dataset without a plan:
 
 ```bash

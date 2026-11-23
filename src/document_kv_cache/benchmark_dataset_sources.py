@@ -375,7 +375,8 @@ def _niah_haystack_paragraphs(
 
     for row in pq.read_table(hotpotqa_parquet).to_pylist():
         for sentences in row["context"]["sentences"]:
-            yield " ".join(sentences)
+            # HotpotQA sentences carry their own leading whitespace.
+            yield "".join(sentences)
     for row in _iter_jsonl(musique_jsonl):
         if row.get("answerable") is False:
             continue
