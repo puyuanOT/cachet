@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "cachet-kv"
-version = "0.2.0"
+version = "0.3.0"
 description = "Cachet document KV-cache orchestration and materialization for long-context LLM serving."
 readme = "README.md"
 requires-python = ">=3.11,<4.0"

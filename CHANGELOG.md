@@ -1,7 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
+- Direct pins refreshed to `poetry-core==2.5.0`, `databricks-sdk==0.170.0`,
+  and `pytest==9.2.0`, with `poetry.lock` regenerated so every transitive
+  package is at its latest release. The dependency-freshness record now holds
+  `vllm` and its hash-locked 0.30.0 closure with Databricks-validation reasons
+  (vLLM 0.34.0 publishes no CUDA 12.9 wheel).
+- PR evidence records which model reviewed the pull request. The record type
+  is now `document_kv.pr_evidence.v2`: the `gpt55_review_*` fields and
+  `--gpt55-review-*` flags become `review_*` and `--review-*`, a non-empty
+  `review_model` (`--review-model`) is required, and `GPT55_REVIEW_OUTCOMES`
+  is renamed `PR_REVIEW_OUTCOMES`.
 - vLLM 0.30.0 (CUDA 12.9) serving profile, with the pinned hash-locked vLLM
   runtime lock shipped in the wheel, and `vllm_wheel_repack` for building the
   E5M2-patched vLLM wheel.

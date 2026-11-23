@@ -37,7 +37,7 @@ from document_kv_cache.native_probe_factories import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl"
+WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/cachet_kv-0.3.0-py3-none-any.whl"
 SINGLE_USER_NAME = "user@example.com"
 REPO_BUNDLE_TEMPLATE = REPO_ROOT / "databricks" / "databricks.yml"
 PACKAGED_BUNDLE_TEMPLATE = REPO_ROOT / "src" / "document_kv_cache" / "templates" / "databricks" / "databricks.yml"
@@ -383,7 +383,7 @@ def test_generated_databricks_runner_installs_wheel_before_forwarding_args(tmp_p
             sys.executable,
             str(runner_path),
             "--package-wheel-uri",
-            "dbfs:/tmp/cachet/cachet_kv-0.2.0-py3-none-any.whl",
+            "dbfs:/tmp/cachet/cachet_kv-0.3.0-py3-none-any.whl",
             "--plan-json",
             "dbfs:/benchmarks/v1-plan.json",
             "--result-json",
@@ -401,7 +401,7 @@ def test_generated_databricks_runner_installs_wheel_before_forwarding_args(tmp_p
         "-m",
         "pip",
         "install",
-        "/dbfs/tmp/cachet/cachet_kv-0.2.0-py3-none-any.whl",
+        "/dbfs/tmp/cachet/cachet_kv-0.3.0-py3-none-any.whl",
     ]
     assert json.loads(main_args_path.read_text(encoding="utf-8")) == [
         "--plan-json",

@@ -48,7 +48,7 @@ python -m document_kv_cache.databricks_job \
   --plan-json-uri dbfs:/benchmarks/v1-plan.json \
   --runner-python-file dbfs:/benchmarks/run_plan.py \
   --runner-script-output databricks-runs/managed-plan/run_plan.py \
-  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.3.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --hardware-target aws-g6-l4 \
   --spark-env-var CACHET_TRANSFORMERS_MODEL_ID=Qwen/Qwen3-4B-Instruct-2507 \
@@ -86,7 +86,7 @@ python -m document_kv_cache.databricks_sglang_smoke_job \
   --output-dir /Volumes/catalog/schema/volume/cachet-sglang-live \
   --runner-python-file dbfs:/benchmarks/run_sglang_smoke.py \
   --runner-script-output databricks-runs/sglang-smoke/run_sglang_smoke.py \
-  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.3.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --hardware-target aws-g6-l4 \
   --generate-live-handoff \
@@ -127,7 +127,7 @@ python -m document_kv_cache.databricks_engine_probe_job \
   --backend-config-json /data/engine-probe-targets.json \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
   --runner-script-output databricks-runs/engine-probe-matrix/run_engine_probe.py \
-  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.3.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --release-safe \
   --output-json databricks-runs/engine-probe-matrix/databricks-engine-probes-submit.json

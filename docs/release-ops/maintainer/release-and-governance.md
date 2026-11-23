@@ -111,7 +111,7 @@ python -m document_kv_cache.release_bundle \
   --databricks-run-status-json databricks-run-status-vllm-engine-probe.json \
   --databricks-run-status-json databricks-run-status-sglang-engine-probe.json \
   --compatibility-databricks-run-status-json databricks-run-status-g5-benchmark.json \
-  --package-wheel dist/cachet_kv-0.2.0-py3-none-any.whl \
+  --package-wheel dist/cachet_kv-0.3.0-py3-none-any.whl \
   --pr-evidence-json pr-evidence.json \
   --dependency-freshness-json docs/release-ops/evidence/dependency-freshness/current/dependency-freshness-evidence.json \
   --requirements-matrix-md docs/v1-requirements-matrix.md \
