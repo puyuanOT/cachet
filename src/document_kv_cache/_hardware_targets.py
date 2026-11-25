@@ -21,6 +21,7 @@ __all__ = [
     "validate_v1_hardware_target",
     "validate_aws_single_node_gpu_type",
     "validate_aws_single_node_gpu_type_for_hardware_target",
+    "validate_gpu_fingerprint_for_hardware_target",
 ]
 
 
@@ -32,12 +33,15 @@ class HardwareTargetProfile:
     display_name: str
     default_databricks_node_type_id: str
     databricks_node_type_prefixes: tuple[str, ...]
+    gpu_name: str
 
     def __post_init__(self) -> None:
         if not self.hardware_target:
             raise ValueError("hardware_target must be non-empty")
         if not self.display_name:
             raise ValueError("display_name must be non-empty")
+        if not self.gpu_name:
+            raise ValueError("gpu_name must be non-empty")
         if not self.default_databricks_node_type_id:
             raise ValueError("default_databricks_node_type_id must be non-empty")
         if not self.databricks_node_type_prefixes:
@@ -51,12 +55,14 @@ V1_AWS_G6_L4_HARDWARE_TARGET_PROFILE = HardwareTargetProfile(
     display_name="AWS g6/L4",
     default_databricks_node_type_id="g6.8xlarge",
     databricks_node_type_prefixes=("g6.",),
+    gpu_name="NVIDIA L4",
 )
 V1_AWS_G5_A10G_HARDWARE_TARGET_PROFILE = HardwareTargetProfile(
     hardware_target="aws-g5-a10g",
     display_name="AWS g5/A10G",
     default_databricks_node_type_id="g5.8xlarge",
     databricks_node_type_prefixes=("g5.",),
+    gpu_name="NVIDIA A10G",
 )
 V1_HARDWARE_TARGET_PROFILE = V1_AWS_G6_L4_HARDWARE_TARGET_PROFILE
 V1_HARDWARE_TARGET_PROFILES = (
@@ -120,6 +126,23 @@ def validate_aws_single_node_gpu_type(node_type_id: str) -> None:
         raise ValueError(
             f"node_type_id must be a supported V1 Databricks node type ({supported}), "
             f"got {node_type_id!r}"
+        )
+
+
+def validate_gpu_fingerprint_for_hardware_target(hardware_fingerprint: str, hardware_target: str) -> None:
+    """Require every GPU in an ``nvidia:<name>, <memory>, <driver>;...`` fingerprint to be the target's GPU."""
+
+    profile = hardware_target_profile(hardware_target)
+    if not hardware_fingerprint.startswith("nvidia:"):
+        raise ValueError(f"hardware_fingerprint must describe NVIDIA GPUs, got {hardware_fingerprint!r}")
+    gpu_names = [
+        gpu.split(",", 1)[0].strip()
+        for gpu in hardware_fingerprint.removeprefix("nvidia:").split(";")
+    ]
+    if not gpu_names or any(name != profile.gpu_name for name in gpu_names):
+        raise ValueError(
+            f"hardware target {hardware_target!r} expects {profile.gpu_name} GPUs, "
+            f"but the node reports {hardware_fingerprint!r}"
         )
 
 

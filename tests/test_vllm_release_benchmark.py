@@ -21,6 +21,7 @@ import pytest
 
 from document_kv_cache import vllm_smoke
 from document_kv_cache._benchmark_cli import merge_isolated_main
+from document_kv_cache._hardware_targets import validate_gpu_fingerprint_for_hardware_target
 from document_kv_cache.artifact_identity import ArtifactIdentity
 from document_kv_cache.benchmark_plan import ISOLATED_ARM_COMMAND_PREFIX, ISOLATED_ARM_MERGE_COMMAND
 from document_kv_cache.benchmarks import (
@@ -447,6 +448,34 @@ def test_release_benchmark_fails_the_run_when_the_gate_fails(tmp_path, monkeypat
 
     plan_execution = json.loads(config.release_plan_execution_path.read_text(encoding="utf-8"))
     assert plan_execution["ok"] is True
+
+
+def test_gpu_fingerprint_must_match_the_hardware_target():
+    validate_gpu_fingerprint_for_hardware_target("nvidia:NVIDIA L4, 23034 MiB, 580.00", "aws-g6-l4")
+    validate_gpu_fingerprint_for_hardware_target(
+        "nvidia:NVIDIA A10G, 23028 MiB, 580.00;NVIDIA A10G, 23028 MiB, 580.00",
+        "aws-g5-a10g",
+    )
+    for fingerprint, target in (
+        ("nvidia:NVIDIA A10G, 23028 MiB, 580.00", "aws-g6-l4"),
+        ("nvidia:NVIDIA L4, 23034 MiB, 580.00;NVIDIA A10G, 23028 MiB, 580.00", "aws-g6-l4"),
+        ("nvidia:NVIDIA L40S, 46068 MiB, 580.00", "aws-g6-l4"),
+    ):
+        with pytest.raises(ValueError, match="expects NVIDIA"):
+            validate_gpu_fingerprint_for_hardware_target(fingerprint, target)
+    with pytest.raises(ValueError, match="must describe NVIDIA GPUs"):
+        validate_gpu_fingerprint_for_hardware_target("unresolved", "aws-g6-l4")
+
+
+def test_release_benchmark_refuses_a_node_whose_gpu_does_not_match_the_target(tmp_path, monkeypatch):
+    config, servers, _budget_checks = _patch_release_runtime(monkeypatch, tmp_path)
+    monkeypatch.setattr(vllm_smoke, "gpu_hardware_fingerprint", lambda: "nvidia:NVIDIA A10G, 23028 MiB, 580.00")
+
+    with pytest.raises(ValueError, match="'aws-g6-l4' expects NVIDIA L4 GPUs"):
+        run_vllm_release_benchmark(config, _metadata())
+
+    assert servers == []
+    assert not config.release_plan_path.exists()
 
 
 def test_release_plan_config_matches_generated_vanilla_artifact_contract(tmp_path):

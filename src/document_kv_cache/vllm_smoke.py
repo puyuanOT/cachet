@@ -23,6 +23,7 @@ import urllib.error
 import urllib.request
 import uuid
 
+from document_kv_cache._hardware_targets import validate_gpu_fingerprint_for_hardware_target
 from document_kv_cache.benchmark_handoffs import (
     enrich_benchmark_jsonl_with_handoffs,
     generate_benchmark_handoff_bundles,
@@ -525,6 +526,8 @@ def run_vllm_release_benchmark(
     """Execute the publication release benchmark plan in the installed vLLM env."""
 
     release = _required_release(config)
+    hardware_fingerprint = gpu_hardware_fingerprint()
+    validate_gpu_fingerprint_for_hardware_target(hardware_fingerprint, config.hardware_target)
     config.output_dir.mkdir(parents=True, exist_ok=True)
     config.local_dir.mkdir(parents=True, exist_ok=True)
     plan_config = build_release_benchmark_plan_config(
@@ -537,7 +540,7 @@ def run_vllm_release_benchmark(
             f"transformers={metadata['transformers_version_installed']}",
             f"torch={metadata['torch_version_installed']}",
         ),
-        hardware_fingerprint=gpu_hardware_fingerprint(),
+        hardware_fingerprint=hardware_fingerprint,
         runtime_id=f"{config.benchmark_id}:{uuid.uuid4().hex}",
         runtime_version=_release_runtime_version(),
         serving_platform="databricks" if os.environ.get("DATABRICKS_RUNTIME_VERSION") else "local",
