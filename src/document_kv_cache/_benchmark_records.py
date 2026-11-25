@@ -1190,7 +1190,8 @@ def merge_isolated_benchmark_run_records(
         cache_state_attestations=cache_state_attestations,
         artifact_identities=artifact_identities,
         method_registry=method_registry,
-        sanitize_evidence=sanitize_evidence,
+        sanitize_evidence=sanitize_evidence
+        or any(record.get("evidence_sanitized") is True for record in payloads),
     )
 
 

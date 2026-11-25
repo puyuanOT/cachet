@@ -708,6 +708,15 @@ def test_merge_independent_one_arm_records_rebuilds_union_comparison():
     assert "TOP_SECRET_OUTPUT" not in serialized
     assert "Ada Lovelace" not in serialized
 
+    unsanitized_request = merge_isolated_benchmark_run_records(
+        records,
+        reference_arm_id="baseline",
+        policy="canary",
+        sanitize_evidence=False,
+    )
+    assert unsanitized_request["evidence_sanitized"] is True
+    assert "TOP_SECRET_OUTPUT" not in json.dumps(unsanitized_request)
+
     duplicate_execution = json.loads(json.dumps(records))
     duplicate_execution[1]["experiment_manifest"]["environment"]["runtime_id"] = (
         duplicate_execution[0]["experiment_manifest"]["environment"]["runtime_id"]
