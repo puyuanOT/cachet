@@ -4,6 +4,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from document_kv_cache.databricks_vllm_smoke_job import (
     DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE,
     DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME,
@@ -14,6 +16,7 @@ from document_kv_cache.databricks_vllm_smoke_job import (
     write_databricks_vllm_smoke_run_submit_json,
     write_databricks_vllm_smoke_runner_script,
 )
+from document_kv_cache.vllm_smoke import RELEASE_MAX_MODEL_LEN, VLLMReleaseBenchmarkConfig, parse_args
 
 
 WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/cachet_kv-0.3.0-py3-none-any.whl"
@@ -219,6 +222,65 @@ def test_databricks_vllm_smoke_payload_passes_prepared_handoff_generation_flags(
         "CACHET_TRANSFORMERS_TORCH_DTYPE": "bfloat16",
         "CACHET_TRANSFORMERS_TRUST_REMOTE_CODE": "true",
     }
+
+
+def test_main_release_benchmark_parameters_round_trip_through_the_smoke_runner(tmp_path):
+    payload_path = tmp_path / "payload.json"
+
+    exit_code = main(
+        [
+            "--benchmark-id",
+            "v1-vllm-release-001",
+            "--output-dir",
+            "/Volumes/catalog/schema/volume/v1-vllm-release",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_vllm_smoke.py",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--wheel-uri",
+            WHEEL_URI,
+            *(item for spec in DATASET_SPECS for item in ("--release-raw-dataset", spec)),
+            "--release-limit-per-dataset",
+            "54",
+            "--release-warmups",
+            "2",
+            "--output-json",
+            str(payload_path),
+        ]
+    )
+
+    assert exit_code == 0
+    parameters = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]["spark_python_task"]["parameters"]
+    assert parameters[parameters.index("--max-model-len") + 1] == str(RELEASE_MAX_MODEL_LEN)
+    assert "--payload-cache-max-bytes" not in parameters
+    assert "--dataset" not in parameters
+
+    smoke_config = parse_args(parameters[: parameters.index("--package-wheel-uri")])
+
+    assert smoke_config.max_model_len == RELEASE_MAX_MODEL_LEN
+    assert smoke_config.release_benchmark == VLLMReleaseBenchmarkConfig(
+        raw_dataset_specs=DATASET_SPECS,
+        limit_per_dataset=54,
+        warmups=2,
+    )
+
+
+def test_databricks_vllm_smoke_config_rejects_release_with_prepared_inputs_or_payload_cache():
+    release = VLLMReleaseBenchmarkConfig(raw_dataset_specs=DATASET_SPECS)
+    base = {
+        "benchmark_id": "v1-vllm-release-001",
+        "output_dir": "/Volumes/catalog/schema/volume/v1-vllm-release",
+        "runner_python_file": "dbfs:/benchmarks/run_vllm_smoke.py",
+        "single_user_name": SINGLE_USER_NAME,
+        "release_benchmark": release,
+    }
+
+    assert DatabricksVLLMSmokeJobConfig(**base).max_model_len == RELEASE_MAX_MODEL_LEN
+    assert DatabricksVLLMSmokeJobConfig(**{**base, "release_benchmark": None}).max_model_len == 4096
+    with pytest.raises(ValueError, match="do not combine"):
+        DatabricksVLLMSmokeJobConfig(**base, dataset_specs=DATASET_SPECS)
+    with pytest.raises(ValueError, match="payload cache to be disabled"):
+        DatabricksVLLMSmokeJobConfig(**base, payload_cache_max_bytes=1024)
 
 
 def test_write_databricks_vllm_smoke_runner_script_imports_smoke_main(tmp_path):
