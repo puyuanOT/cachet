@@ -33,6 +33,7 @@ from document_kv_cache.benchmarks import (
     SUPPORTED_V1_DATASETS,
 )
 from document_kv_cache.release_bundle import _plan_execution_sidecar_issues
+from document_kv_cache.release_evidence import _benchmark_evidence_gate_issues, _v1_benchmark_issues
 from document_kv_cache.vllm_smoke import (
     VLLMReleaseBenchmarkConfig,
     VLLMSmokeBenchmarkConfig,
@@ -336,6 +337,8 @@ def test_release_benchmark_plan_publishes_a_cold_latency_gate_end_to_end(release
         CACHE_REUSE_ARM,
     }
     assert merged["experiment_manifest"]["has_unresolved_provenance"] is False
+    assert _v1_benchmark_issues(merged) == ()
+    assert _benchmark_evidence_gate_issues(merged, gate, method_registry=None) == ()
 
     plan_execution = json.loads(config.release_plan_execution_path.read_text(encoding="utf-8"))
     assert plan_execution["ok"] is True
@@ -373,9 +376,37 @@ def test_merge_isolated_cli_rejects_release_records_without_cold_attestations(re
     assert any("has no cache-state attestation" in issue for issue in gate["issues"])
 
 
+def test_merge_isolated_cli_sanitizes_the_merged_record_on_request(release_run, tmp_path):
+    output_dir = release_run.config.output_dir
+    output_json = tmp_path / "sanitized.json"
+
+    exit_code = merge_isolated_main(
+        [
+            "--record-json",
+            str(output_dir / f"v1-benchmark.{BASELINE_PREFILL_ARM}.json"),
+            "--record-json",
+            str(output_dir / f"v1-benchmark.{CACHE_REUSE_ARM}.json"),
+            "--reference-arm-id",
+            BASELINE_PREFILL_ARM,
+            "--sanitize-evidence",
+            "--output-json",
+            str(output_json),
+        ]
+    )
+
+    assert exit_code == 0
+    sanitized = json.loads(output_json.read_text(encoding="utf-8"))
+    full = json.loads(release_run.config.benchmark_output_path.read_text(encoding="utf-8"))
+    assert sanitized["evidence_sanitized"] is True
+    assert "evidence_sanitized" not in full
+    assert {measurement["expected_answer"] for measurement in sanitized["measurements"]} == {None}
+    assert all(measurement["expected_answer"] for measurement in full["measurements"])
+
+
 def test_merge_isolated_cli_reports_records_from_one_execution_as_an_error(release_run, tmp_path, capsys):
-    baseline_record = release_run.config.output_dir / f"results.{BASELINE_PREFILL_ARM}.json"
+    baseline_record = release_run.config.output_dir / f"v1-benchmark.{BASELINE_PREFILL_ARM}.json"
     output_json = tmp_path / "merged.json"
+    assert baseline_record.exists()
 
     exit_code = merge_isolated_main(
         [
@@ -391,7 +422,9 @@ def test_merge_isolated_cli_reports_records_from_one_execution_as_an_error(relea
     )
 
     assert exit_code == 1
-    assert json.loads(capsys.readouterr().out)["ok"] is False
+    error = json.loads(capsys.readouterr().out)
+    assert error["ok"] is False
+    assert "duplicate arm ids" in error["error"]
     assert not output_json.exists()
 
 

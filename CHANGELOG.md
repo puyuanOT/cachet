@@ -16,7 +16,10 @@
   through `cachet-vllm-smoke-databricks-job`) runs a V1 plan that generates
   Vanilla handoffs, runs each arm against its own vLLM server with cold,
   attested payload reads, merges the arms with the new
-  `benchmark_runner merge-isolated` subcommand, gates the comparison on latency
+  `benchmark_runner merge-isolated` subcommand (full record by default,
+  `--sanitize-evidence` for the sanitized form; the library
+  `merge_isolated_benchmark_run_records` gains `sanitize_evidence`, still
+  defaulting to sanitized), gates the comparison on latency
   under the publication policy, and writes the plan-execution record the strict
   release bundle requires. Plans gain `--isolated-arm-jobs`,
   `--benchmark-handoff-cache-method`, `--benchmark-handoff-segment-per-document`,

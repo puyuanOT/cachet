@@ -196,7 +196,9 @@ python -m document_kv_cache.benchmark_plan \
   `<runtime-id>:<arm>`, then a `merge-benchmark-arms` command that runs
   `benchmark_runner merge-isolated` to produce the combined record and
   evidence gate. This is the `separate_process_or_job` isolation the
-  publication policy accepts. Each arm needs its own serving process: the
+  publication policy accepts. Like `benchmark_runner --output-json`, the merged
+  record keeps raw answers and outputs because release evidence re-scores them;
+  `merge-isolated --sanitize-evidence` writes the sanitized form instead. Each arm needs its own serving process: the
   executor's `command_context` hook (used by the vLLM release benchmark below)
   starts and stops one per arm command, and any other caller must do the same.
 - `--cache-state-attestation-json` accepts attestation JSON, vLLM telemetry

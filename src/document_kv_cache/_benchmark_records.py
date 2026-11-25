@@ -930,12 +930,17 @@ def merge_isolated_benchmark_run_records(
     cache_state_attestations: Iterable[Any] = (),
     artifact_identities: Mapping[str, Any] | None = None,
     method_registry: Any = None,
+    sanitize_evidence: bool = True,
 ) -> dict[str, Any]:
     """Merge independently valid one-arm jobs into one freshly gated comparison.
 
     A one-arm source necessarily names itself as its local reference.  The union-level
     comparison is therefore supplied explicitly here and is validated only after all
     physical arms have been collected.
+
+    The merged record omits raw prompts, answers, and outputs unless
+    ``sanitize_evidence`` is false; release evidence needs that full record.
+    Sanitized sources always produce a sanitized merge.
     """
 
     source_records = tuple(records)
@@ -1180,11 +1185,12 @@ def merge_isolated_benchmark_run_records(
         "evidence_gate": {"policy": policy},
     }
     result = benchmark_run_result_from_record(seed_record, evidence_policy=policy)
-    return benchmark_run_result_to_evidence_record(
+    return benchmark_run_result_to_record(
         result,
         cache_state_attestations=cache_state_attestations,
         artifact_identities=artifact_identities,
         method_registry=method_registry,
+        sanitize_evidence=sanitize_evidence,
     )
 
 

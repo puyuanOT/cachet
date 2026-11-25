@@ -425,6 +425,14 @@ def merge_isolated_main(argv: Sequence[str] | None = None) -> int:
             "telemetry .jsonl log. Repeat for every cache-arm execution."
         ),
     )
+    parser.add_argument(
+        "--sanitize-evidence",
+        action="store_true",
+        help=(
+            "Omit raw prompts, answers, and outputs from the merged record. The default full "
+            "record is the release-evidence input, like benchmark_runner --output-json."
+        ),
+    )
     parser.add_argument("--output-json", required=True, help="Merged benchmark record output path.")
     parser.add_argument("--evidence-gate-output-json", help="Write the merged evidence gate as a standalone JSON record.")
     args = parser.parse_args(argv)
@@ -448,6 +456,7 @@ def merge_isolated_main(argv: Sequence[str] | None = None) -> int:
             artifact_identities=_artifact_identities_from_files(
                 args.artifact_identity_json or ()
             ),
+            sanitize_evidence=args.sanitize_evidence,
         )
         _write_result_record(
             merged,
