@@ -253,6 +253,44 @@ def test_execute_benchmark_job_plan_records_command_context_failure_and_stops():
     assert record["commands"][0]["error"] == "RuntimeError: server did not become ready"
 
 
+def test_execute_benchmark_job_plan_kills_a_command_that_outlives_its_timeout(tmp_path):
+    from contextlib import contextmanager
+
+    exited = []
+
+    @contextmanager
+    def command_context(name):
+        try:
+            yield
+        finally:
+            exited.append(name)
+
+    plan = {
+        "commands": [
+            {"name": "hang", "argv": [sys.executable, "-c", "import time; time.sleep(60)"]},
+            {"name": "skip", "argv": [sys.executable, "-c", "pass"]},
+        ]
+    }
+
+    results = execute_benchmark_job_plan(plan, command_context=command_context, command_timeout_seconds=0.5)
+
+    assert [(result.name, result.returncode, result.error) for result in results] == [
+        ("hang", 124, "timed out after 0.5s")
+    ]
+    assert exited == ["hang"]
+    with pytest.raises(ValueError, match="command_timeout_seconds must be positive"):
+        execute_benchmark_job_plan(plan, command_timeout_seconds=0)
+
+    plan_path = tmp_path / "plan.json"
+    result_path = tmp_path / "result.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    exit_code = main(
+        ["--plan-json", str(plan_path), "--result-json", str(result_path), "--command-timeout-seconds", "0.5"]
+    )
+    assert exit_code == 2
+    assert json.loads(result_path.read_text(encoding="utf-8"))["commands"][0]["returncode"] == 124
+
+
 def test_execute_benchmark_job_plan_requires_command_context_for_isolated_arm_plans(tmp_path, capsys):
     marker = tmp_path / "ran.txt"
     plan = {

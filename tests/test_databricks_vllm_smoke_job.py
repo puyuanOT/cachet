@@ -242,13 +242,18 @@ def test_main_release_benchmark_parameters_round_trip_through_the_smoke_runner(t
             *(item for spec in DATASET_SPECS for item in ("--release-raw-dataset", spec)),
             "--release-warmups",
             "2",
+            "--run-timeout-seconds",
+            "10800",
             "--output-json",
             str(payload_path),
         ]
     )
 
     assert exit_code == 0
-    parameters = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]["spark_python_task"]["parameters"]
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    assert payload["timeout_seconds"] == payload["tasks"][0]["timeout_seconds"] == 10800
+    assert payload["tasks"][0]["max_retries"] == 0
+    parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
     assert parameters[parameters.index("--max-model-len") + 1] == str(RELEASE_MAX_MODEL_LEN)
     assert parameters[parameters.index("--gpu-memory-utilization") + 1] == "0.7"
     assert parameters[parameters.index("--release-limit-per-dataset") + 1] == "54"
@@ -287,6 +292,9 @@ def test_databricks_vllm_smoke_config_rejects_release_with_prepared_inputs_or_pa
     other_method = VLLMReleaseBenchmarkConfig(raw_dataset_specs=DATASET_SPECS, cache_method="cacheblend")
     with pytest.raises(ValueError, match="runs the 'vanilla_prefill' cache method only, not 'cacheblend'"):
         DatabricksVLLMSmokeJobConfig(**{**base, "release_benchmark": other_method})
+    assert DatabricksVLLMSmokeJobConfig(**base).run_timeout_seconds == 14_400
+    with pytest.raises(ValueError, match="run_timeout_seconds must be an integer"):
+        DatabricksVLLMSmokeJobConfig(**base, run_timeout_seconds=0)
 
 
 def test_write_databricks_vllm_smoke_runner_script_imports_smoke_main(tmp_path):

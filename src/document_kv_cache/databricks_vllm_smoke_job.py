@@ -20,9 +20,12 @@ from document_kv_cache._hardware_targets import (
 from document_kv_cache.databricks_job import (
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
     DEFAULT_DATABRICKS_DATA_SECURITY_MODE,
+    DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS,
     DEFAULT_DATABRICKS_SPARK_VERSION,
+    DEFAULT_DATABRICKS_TASK_MAX_RETRIES,
     DatabricksSingleNodeGPUClusterConfig,
     _spark_env_vars_from_cli,
+    _validated_databricks_run_timeout_seconds,
     _validated_spark_env_vars,
     build_single_node_gpu_cluster,
 )
@@ -104,6 +107,7 @@ class DatabricksVLLMSmokeJobConfig:
     runner_python_file: str
     run_name: str = DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME
     task_key: str = DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY
+    run_timeout_seconds: int = DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS
     hardware_target: str | None = None
     node_type_id: str = DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
     spark_version: str = DEFAULT_DATABRICKS_SPARK_VERSION
@@ -145,6 +149,7 @@ class DatabricksVLLMSmokeJobConfig:
             raise ValueError("run_name must be non-empty")
         if not self.task_key:
             raise ValueError("task_key must be non-empty")
+        _validated_databricks_run_timeout_seconds(self.run_timeout_seconds)
         object.__setattr__(
             self,
             "hardware_target",
@@ -226,6 +231,8 @@ def build_databricks_vllm_smoke_run_submit_payload(config: DatabricksVLLMSmokeJo
         cluster["spark_env_vars"] = dict(config.spark_env_vars)
     task: dict[str, Any] = {
         "task_key": config.task_key,
+        "timeout_seconds": config.run_timeout_seconds,
+        "max_retries": DEFAULT_DATABRICKS_TASK_MAX_RETRIES,
         "new_cluster": cluster,
         "spark_python_task": {
             "python_file": config.runner_python_file,
@@ -236,6 +243,7 @@ def build_databricks_vllm_smoke_run_submit_payload(config: DatabricksVLLMSmokeJo
         task["spark_python_task"]["parameters"].extend(["--package-wheel-uri", config.wheel_uri])
     return {
         "run_name": config.run_name,
+        "timeout_seconds": config.run_timeout_seconds,
         "tasks": [task],
     }
 
@@ -362,6 +370,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--run-name", default=DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME)
     parser.add_argument("--task-key", default=DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY)
     parser.add_argument(
+        "--run-timeout-seconds",
+        type=int,
+        default=DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS,
+        help="Databricks cancels the run after this many seconds; the task is never retried.",
+    )
+    parser.add_argument(
         "--hardware-target",
         choices=SUPPORTED_V1_HARDWARE_TARGETS,
         help="V1 hardware target used to derive --node-type-id when it is omitted.",
@@ -481,6 +495,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             runner_python_file=args.runner_python_file,
             run_name=args.run_name,
             task_key=args.task_key,
+            run_timeout_seconds=args.run_timeout_seconds,
             node_type_id=databricks_node_type_for_hardware_target(args.hardware_target, args.node_type_id),
             hardware_target=args.hardware_target,
             spark_version=args.spark_version,

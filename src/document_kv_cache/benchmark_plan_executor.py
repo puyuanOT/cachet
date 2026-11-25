@@ -164,6 +164,7 @@ def execute_benchmark_job_plan(
     cwd: str | Path | None = None,
     command_context: BenchmarkCommandContext | None = None,
     env: Mapping[str, str] | None = None,
+    command_timeout_seconds: float | None = None,
 ) -> tuple[BenchmarkCommandResult, ...]:
     """Run plan commands in order, stopping at the first failure.
 
@@ -172,7 +173,8 @@ def execute_benchmark_job_plan(
     a context that fails records the command as failed. ``env`` replaces the
     inherited environment of every command when provided. Isolated-arm plans
     require ``command_context``: their merged record claims a separate serving
-    process per arm, which only the driver's context can guarantee.
+    process per arm, which only the driver's context can guarantee. A command
+    that outlives ``command_timeout_seconds`` is killed and recorded as failed.
     """
 
     if plan.get("isolated_arm_jobs") is True and command_context is None and not dry_run:
@@ -180,6 +182,12 @@ def execute_benchmark_job_plan(
             "isolated-arm plans require a command_context that starts a separate serving "
             "process for each arm"
         )
+    if command_timeout_seconds is not None and not (
+        isinstance(command_timeout_seconds, (int, float))
+        and not isinstance(command_timeout_seconds, bool)
+        and command_timeout_seconds > 0
+    ):
+        raise ValueError("command_timeout_seconds must be positive")
     commands = tuple(_commands_from_plan(plan))
     results: list[BenchmarkCommandResult] = []
     for name, argv in commands:
@@ -194,7 +202,18 @@ def execute_benchmark_job_plan(
                     cwd=str(cwd) if cwd is not None else None,
                     check=False,
                     env=None if env is None else dict(env),
+                    timeout=command_timeout_seconds,
                 )
+        except subprocess.TimeoutExpired:
+            results.append(
+                BenchmarkCommandResult(
+                    name=name,
+                    argv=runtime_argv,
+                    returncode=124,
+                    error=f"timed out after {command_timeout_seconds:g}s",
+                )
+            )
+            break
         except OSError as exc:
             results.append(BenchmarkCommandResult(name=name, argv=runtime_argv, returncode=127, error=str(exc)))
             break
@@ -221,8 +240,14 @@ def execute_benchmark_job_plan_json(
     *,
     dry_run: bool = False,
     cwd: str | Path | None = None,
+    command_timeout_seconds: float | None = None,
 ) -> tuple[BenchmarkCommandResult, ...]:
-    return execute_benchmark_job_plan(_plan_from_payload(_plan_payload_for(path)), dry_run=dry_run, cwd=cwd)
+    return execute_benchmark_job_plan(
+        _plan_from_payload(_plan_payload_for(path)),
+        dry_run=dry_run,
+        cwd=cwd,
+        command_timeout_seconds=command_timeout_seconds,
+    )
 
 
 def benchmark_command_results_to_record(
@@ -520,6 +545,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--cwd", help="Optional working directory for all plan commands.")
     parser.add_argument("--dry-run", action="store_true", help="Validate and report commands without running them.")
     parser.add_argument("--result-json", help="Optional path for command execution result JSON.")
+    parser.add_argument(
+        "--command-timeout-seconds",
+        type=float,
+        help="Kill and fail any plan command that runs longer than this.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -527,7 +557,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         plan_source = benchmark_plan_source_payload_to_record(args.plan_json, _driver_path(args.plan_json), plan_payload)
         token = _PRELOADED_PLAN_PAYLOAD.set((args.plan_json, plan_payload))
         try:
-            results = execute_benchmark_job_plan_json(args.plan_json, dry_run=args.dry_run, cwd=args.cwd)
+            results = execute_benchmark_job_plan_json(
+                args.plan_json,
+                dry_run=args.dry_run,
+                cwd=args.cwd,
+                command_timeout_seconds=args.command_timeout_seconds,
+            )
         finally:
             _PRELOADED_PLAN_PAYLOAD.reset(token)
         record = _benchmark_command_results_to_record(results, plan_source=plan_source)
