@@ -228,8 +228,22 @@ def test_build_sglang_launch_config_emits_valid_release_shape():
         "deployment": "qa",
         **_document_kv_extra("sglang", provider_factory=SGLANG_TEST_PROVIDER_FACTORY),
         "document_kv.record_type": DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
+        "document_kv.kv_injection_method": "runtime-prefix-cache-bind",
     }
     validate_engine_launch_config_record(record, expected_backend=ServingBackend.SGLANG)
+
+
+def test_default_sglang_launch_config_passes_the_sglang_runtime_preflight(tmp_path):
+    from sglang_kv_injection.sglang_hicache_config import DOCUMENT_KV_HICACHE_CONFIG_RECORD_TYPE
+    from sglang_kv_injection.sglang_runtime_preflight import _sglang_launch_config_to_record
+
+    output_json = tmp_path / "sglang-launch-config.json"
+    assert main(["build-sglang", "--output-json", str(output_json)]) == 0
+
+    assert DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE == DOCUMENT_KV_HICACHE_CONFIG_RECORD_TYPE
+    for record in (build_sglang_launch_config(), json.loads(output_json.read_text(encoding="utf-8"))):
+        assert _sglang_launch_config_to_record(record)["ok"] is True
+        assert not engine_launch_config_record_issues(record, expected_backend=ServingBackend.SGLANG)
 
 
 def test_build_sglang_launch_config_defaults_to_builtin_provider_factory():

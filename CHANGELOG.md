@@ -27,6 +27,13 @@
   artifact identity (`--artifact-identity-output-json`); cache-state
   attestations can be read from the vLLM provider's telemetry `.jsonl` log; and
   `execute_benchmark_job_plan` takes `command_context` and `env`.
+- `cachet-engine-launch-config build-sglang` and `build_sglang_launch_config`
+  default to the SGLang HiCache identity that the SGLang runtime preflight
+  requires: `DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE` is now
+  `sglang_kv_injection.document_kv_hicache_config.v1` and the default
+  injection method is `runtime-prefix-cache-bind`. The previous defaults
+  failed that preflight, so planned release-safe SGLang probes stopped before
+  probing.
 - vLLM 0.30.0 (CUDA 12.9) serving profile, with the pinned hash-locked vLLM
   runtime lock shipped in the wheel, and `vllm_wheel_repack` for building the
   E5M2-patched vLLM wheel.

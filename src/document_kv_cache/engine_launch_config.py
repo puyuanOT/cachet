@@ -13,6 +13,7 @@ from document_kv_cache.engine_adapters import (
     ENGINE_ADAPTER_HANDOFF_RECORD_TYPE,
     ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION,
     ServingBackend,
+    sglang_adapter_spec,
 )
 from document_kv_cache.storage import local_path
 from vllm_kv_injection.vllm_dynamic_connector import DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY
@@ -67,7 +68,8 @@ DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH = "sglang_kv_injection.sglang_dynamic_bac
 DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION = 1
 DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD = "native-kv-import"
 DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE = f"{_VLLM_RECORD_TYPE_PREFIX}launch_config.v1"
-DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE = f"{_SGLANG_RECORD_TYPE_PREFIX}launch_config.v1"
+DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE = f"{_SGLANG_RECORD_TYPE_PREFIX}document_kv_hicache_config.v1"
+_SGLANG_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD = sglang_adapter_spec().kv_injection_method
 DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY = DOCUMENT_KV_NATIVE_PROVIDER_FACTORY
 DEFAULT_SGLANG_DOCUMENT_KV_PROVIDER_FACTORY = (
     "sglang_kv_injection.sglang_dynamic_backend:build_document_kv_hicache_provider"
@@ -178,7 +180,7 @@ def build_sglang_launch_config(
     module_path: str = DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH,
     record_type: str = DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
     schema_version: int = DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION,
-    kv_injection_method: str = DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD,
+    kv_injection_method: str = _SGLANG_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD,
     extra_config: Mapping[str, Any] | None = None,
     provider_factory: str | None = DEFAULT_SGLANG_DOCUMENT_KV_PROVIDER_FACTORY,
     encode_extra_config_as_json: bool = True,
@@ -918,7 +920,11 @@ def _add_vllm_parser(subparsers: Any) -> None:
             "in-process payload URI cache. Omit or pass 0 to disable."
         ),
     )
-    _add_common_build_args(parser, default_record_type=DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE)
+    _add_common_build_args(
+        parser,
+        default_record_type=DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
+        default_kv_injection_method=DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD,
+    )
 
 
 def _add_vllm_offload_parser(subparsers: Any) -> None:
@@ -960,14 +966,23 @@ def _add_sglang_parser(subparsers: Any) -> None:
     parser.add_argument("--hicache-write-policy", choices=sorted(_SGLANG_HICACHE_WRITE_POLICIES))
     parser.add_argument("--hicache-io-backend", choices=sorted(_SGLANG_HICACHE_IO_BACKENDS))
     parser.add_argument("--hicache-mem-layout", choices=sorted(_SGLANG_HICACHE_MEM_LAYOUTS))
-    _add_common_build_args(parser, default_record_type=DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE)
+    _add_common_build_args(
+        parser,
+        default_record_type=DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
+        default_kv_injection_method=_SGLANG_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD,
+    )
 
 
-def _add_common_build_args(parser: argparse.ArgumentParser, *, default_record_type: str) -> None:
+def _add_common_build_args(
+    parser: argparse.ArgumentParser,
+    *,
+    default_record_type: str,
+    default_kv_injection_method: str,
+) -> None:
     parser.add_argument("--output-json", help="Optional output JSON path. Defaults to stdout.")
     parser.add_argument("--record-type", default=default_record_type)
     parser.add_argument("--schema-version", type=int, default=DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION)
-    parser.add_argument("--kv-injection-method", default=DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD)
+    parser.add_argument("--kv-injection-method", default=default_kv_injection_method)
     parser.add_argument(
         "--extra-config",
         action="append",
