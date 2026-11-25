@@ -226,7 +226,12 @@ def execute_benchmark_job_plan(
             break
         if completed is None:
             results.append(
-                BenchmarkCommandResult(name=name, argv=runtime_argv, returncode=124, error=timeout_error)
+                BenchmarkCommandResult(
+                    name=name,
+                    argv=runtime_argv,
+                    returncode=124 if timeout_error else 1,
+                    error=timeout_error or "command context suppressed the command's exception",
+                )
             )
             break
         results.append(BenchmarkCommandResult(name=name, argv=runtime_argv, returncode=completed.returncode))

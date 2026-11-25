@@ -317,6 +317,24 @@ def test_execute_benchmark_job_plan_records_a_teardown_timeout_as_a_context_fail
     assert results[0].error.startswith("TimeoutExpired: Command '['vllm', 'serve']' timed out")
 
 
+def test_execute_benchmark_job_plan_records_a_suppressed_command_failure(monkeypatch):
+    from contextlib import suppress
+
+    def raise_runtime_error(*_args, **_kwargs):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(public_plan_executor.subprocess, "run", raise_runtime_error)
+
+    results = execute_benchmark_job_plan(
+        {"commands": [{"name": "arm", "argv": [sys.executable, "-c", "pass"]}]},
+        command_context=lambda _name: suppress(RuntimeError),
+    )
+
+    assert [(result.name, result.returncode, result.error) for result in results] == [
+        ("arm", 1, "command context suppressed the command's exception")
+    ]
+
+
 def test_execute_benchmark_job_plan_requires_command_context_for_isolated_arm_plans(tmp_path, capsys):
     marker = tmp_path / "ran.txt"
     plan = {
