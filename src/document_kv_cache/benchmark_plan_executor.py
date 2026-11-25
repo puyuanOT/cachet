@@ -195,25 +195,20 @@ def execute_benchmark_job_plan(
         if dry_run:
             results.append(BenchmarkCommandResult(name=name, argv=runtime_argv, returncode=0, skipped=True))
             continue
+        completed: subprocess.CompletedProcess[bytes] | None = None
+        timeout_error = ""
         try:
             with nullcontext() if command_context is None else command_context(name):
-                completed = subprocess.run(
-                    runtime_argv,
-                    cwd=str(cwd) if cwd is not None else None,
-                    check=False,
-                    env=None if env is None else dict(env),
-                    timeout=command_timeout_seconds,
-                )
-        except subprocess.TimeoutExpired:
-            results.append(
-                BenchmarkCommandResult(
-                    name=name,
-                    argv=runtime_argv,
-                    returncode=124,
-                    error=f"timed out after {command_timeout_seconds:g}s",
-                )
-            )
-            break
+                try:
+                    completed = subprocess.run(
+                        runtime_argv,
+                        cwd=str(cwd) if cwd is not None else None,
+                        check=False,
+                        env=None if env is None else dict(env),
+                        timeout=command_timeout_seconds,
+                    )
+                except subprocess.TimeoutExpired:
+                    timeout_error = f"timed out after {command_timeout_seconds:g}s"
         except OSError as exc:
             results.append(BenchmarkCommandResult(name=name, argv=runtime_argv, returncode=127, error=str(exc)))
             break
@@ -227,6 +222,11 @@ def execute_benchmark_job_plan(
                     returncode=1,
                     error=f"{type(exc).__name__}: {exc}",
                 )
+            )
+            break
+        if completed is None:
+            results.append(
+                BenchmarkCommandResult(name=name, argv=runtime_argv, returncode=124, error=timeout_error)
             )
             break
         results.append(BenchmarkCommandResult(name=name, argv=runtime_argv, returncode=completed.returncode))

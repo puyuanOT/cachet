@@ -1,5 +1,6 @@
 import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -289,6 +290,31 @@ def test_execute_benchmark_job_plan_kills_a_command_that_outlives_its_timeout(tm
     )
     assert exit_code == 2
     assert json.loads(result_path.read_text(encoding="utf-8"))["commands"][0]["returncode"] == 124
+
+
+@pytest.mark.parametrize("command_timeout_seconds", [None, 30.0])
+def test_execute_benchmark_job_plan_records_a_teardown_timeout_as_a_context_failure(command_timeout_seconds):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def command_context(name):
+        yield
+        raise subprocess.TimeoutExpired(["vllm", "serve"], 30)
+
+    results = execute_benchmark_job_plan(
+        {
+            "commands": [
+                {"name": "arm", "argv": [sys.executable, "-c", "pass"]},
+                {"name": "skip", "argv": [sys.executable, "-c", "pass"]},
+            ]
+        },
+        command_context=command_context,
+        command_timeout_seconds=command_timeout_seconds,
+    )
+
+    assert [(result.name, result.returncode) for result in results] == [("arm", 1)]
+    assert results[0].error is not None
+    assert results[0].error.startswith("TimeoutExpired: Command '['vllm', 'serve']' timed out")
 
 
 def test_execute_benchmark_job_plan_requires_command_context_for_isolated_arm_plans(tmp_path, capsys):
