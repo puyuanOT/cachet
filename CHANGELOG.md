@@ -12,6 +12,18 @@
   `--gpt55-review-*` flags become `review_*` and `--review-*`, a non-empty
   `review_model` (`--review-model`) is required, and `GPT55_REVIEW_OUTCOMES`
   is renamed `PR_REVIEW_OUTCOMES`.
+- vLLM release benchmark: `cachet-vllm-smoke --release-raw-dataset` (also
+  through `cachet-vllm-smoke-databricks-job`) runs a V1 plan that generates
+  Vanilla handoffs, runs each arm against its own vLLM server with cold,
+  attested payload reads, merges the arms with the new
+  `benchmark_runner merge-isolated` subcommand, gates the comparison on latency
+  under the publication policy, and writes the plan-execution record the strict
+  release bundle requires. Plans gain `--isolated-arm-jobs`,
+  `--benchmark-handoff-cache-method`, `--benchmark-handoff-segment-per-document`,
+  and `--benchmark-handoff-generator-version`; generated bundles write their
+  artifact identity (`--artifact-identity-output-json`); cache-state
+  attestations can be read from the vLLM provider's telemetry `.jsonl` log; and
+  `execute_benchmark_job_plan` takes `command_context` and `env`.
 - vLLM 0.30.0 (CUDA 12.9) serving profile, with the pinned hash-locked vLLM
   runtime lock shipped in the wheel, and `vllm_wheel_repack` for building the
   E5M2-patched vLLM wheel.

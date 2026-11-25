@@ -80,6 +80,9 @@ Cachet does not ship a fake benchmark generator.
   `--block-size`, and `--bytes-per-token`, plus `--num-query-heads`,
   `--num-kv-heads`, `--head-size`, `--kv-stride-bytes`, `--shares-kv-storage`,
   and `--storage-layout` when the adapter needs attention geometry.
+- `--artifact-identity-output-json` writes the generated artifact's
+  `ArtifactIdentity`, the input publication gating takes as
+  `--artifact-identity-json`.
 
 ```bash
 CACHET_TRANSFORMERS_MODEL_ID=Qwen/Qwen3-4B-Instruct-2507 \
@@ -122,8 +125,9 @@ cachet-benchmark-handoff-manifest \
 
 To run the V1 benchmark contract against existing OpenAI-compatible vLLM or
 SGLang servers, generate a reproducible command plan for all four datasets. The
-plan-level generator below is the monolithic full-prefix control; use the
-per-document Vanilla bundle command above when benchmarking Vanilla:
+plan-level generator below is the monolithic full-prefix control; to generate
+Vanilla handoffs in the plan, use the pre-RoPE factory with
+`--benchmark-handoff-cache-method vanilla_prefill --benchmark-handoff-segment-per-document`:
 
 ```bash
 python -m document_kv_cache.benchmark_plan \
@@ -180,7 +184,25 @@ python -m document_kv_cache.benchmark_plan \
   datasets with handoffs through `document_kv_cache.benchmark_handoffs`, and
   then runs `benchmark_runner`. Enriched inputs default to
   `<prepared-dir>/<dataset>.handoffs.jsonl` unless
-  `--benchmark-handoff-output-jsonl DATASET=PATH` is set.
+  `--benchmark-handoff-output-jsonl DATASET=PATH` is set. Generated bundles
+  also write `<handoff-output-dir>/<dataset>-artifact-identity.json`, which the
+  runner receives as `--artifact-identity-json`; resolved
+  `--model-revision`, `--tokenizer-id`, `--tokenizer-revision`, and
+  `--benchmark-handoff-generator-version` values are stamped into those
+  identities.
+- `--isolated-arm-jobs` (requires `--runtime-id`) replaces the single runner
+  command with one `run-benchmark-<arm>` command per arm, each writing a
+  one-arm record to `<benchmark-output>.<arm>.json` under runtime id
+  `<runtime-id>:<arm>`, then a `merge-benchmark-arms` command that runs
+  `benchmark_runner merge-isolated` to produce the combined record and
+  evidence gate. This is the `separate_process_or_job` isolation the
+  publication policy accepts. Each arm needs its own serving process: the
+  executor's `command_context` hook (used by the vLLM release benchmark below)
+  starts and stops one per arm command, and any other caller must do the same.
+- `--cache-state-attestation-json` accepts attestation JSON, vLLM telemetry
+  JSON, or the vLLM provider's telemetry `.jsonl` log; only
+  `document_kv.vllm_native_provider_load.v1` lines are read from a log. Cold
+  latency claims need one attestation per cache request.
 - `--storage-benchmark-workspace-dir` appends a storage-reader benchmark on the
   same node; the Unity Catalog reader is added only when
   `--storage-benchmark-uc-volume-root` points at a real UC Volume. Output goes
@@ -230,6 +252,35 @@ python -m document_kv_cache.benchmark_plan \
   planner has no input for the dependency freshness sidecar, so build the
   final strict bundle as a separate `cachet-release-bundle --require-complete-v1`
   command (see [Release Bundle](release-and-governance.md#release-bundle)).
+
+### vLLM Release Benchmark
+
+`cachet-vllm-smoke --release-raw-dataset DATASET=PATH` (repeat for all four V1
+datasets) runs the release benchmark as a plan on one GPU node:
+
+1. It writes `release-benchmark-plan.json`, which prepares the raw rows,
+   generates Vanilla handoffs (`vanilla_prefill`, one segment per document,
+   bfloat16, Qwen3 revision `cdbee75f17c01a7cc42f958dc650907174af0554`) under
+   `<local-root>/<benchmark-id>/handoffs`, and attaches them.
+2. Each arm runs against a fresh vLLM server: `baseline_prefill` with a unique
+   prefix-cache salt per request, and the cache arm with the payload cache
+   disabled and `DOCUMENT_KV_EVICT_PAGE_CACHE=1`, so every load is a cold read
+   attested in the provider telemetry log.
+3. The merged record is gated under the publication policy for the `latency`
+   measurement scope, with every cache request cold-attested.
+4. It writes `release-plan-execution.json` with the plan's `plan_source`, the
+   plan-execution record the strict release bundle requires.
+
+The run fails if any planned command fails or the merged evidence gate is not
+ok. The release gate claims latency only. Answer quality is reported from the
+sealed [Quality v2 report](../../../benchmarks/appendix/vllm-0300-quality-v2/README.md),
+where Vanilla does not meet answer-quality non-inferiority on HotpotQA or
+MusiQue. `--max-model-len` defaults to 40960 so the 32K-token NIAH cell fits.
+Handoffs are stored twice (build shard and per-request payload), at about
+147 KB per token for Qwen3 4B in bfloat16; the release-gate sizes (about 50 rows
+per dataset and 54 NIAH rows) need roughly 400 GB on `/local_disk0`.
+`--release-limit-per-dataset`, `--release-warmups`, `--release-model-revision`,
+and `--release-generator-factory` adjust the plan.
 
 ## Dataset Prep And Runner
 
