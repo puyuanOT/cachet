@@ -156,6 +156,12 @@ python -m document_kv_cache.benchmark_plan \
   --engine-probe-native-probe-factories-output-json sglang=/data/sglang-native-probe-factories.json \
   --engine-probe-sglang-runtime-preflight-output-json sglang=/data/sglang-runtime-preflight.json \
   --engine-probe-sglang-runtime-preflight-launch-config-json sglang=/data/engine-launch-configs/sglang-launch-config.json \
+  --engine-probe-vllm-runtime-preflight-output-json vllm=/data/vllm-runtime-preflight.json \
+  --engine-probe-vllm-runtime-preflight-layer-names-json vllm=/data/vllm-layer-names.json \
+  --engine-probe-native-delegate-factory vllm=vllm_kv_injection.probe:build_native_connector_probe \
+  --engine-probe-native-delegate-factory sglang=sglang_kv_injection.probe:build_native_connector_probe \
+  --engine-probe-metadata vllm=vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector \
+  --engine-probe-metadata sglang=sglang_kv_injection.connector_factory=sglang_kv_injection.probe:build_document_kv_hicache_probe_connector \
   --engine-probe-use-builtin-factories \
   --evidence-policy publication \
   --release-evidence-output-json /data/release-evidence.json \
@@ -222,6 +228,11 @@ python -m document_kv_cache.benchmark_plan \
 - `--engine-probe-use-builtin-factories` fills missing factories with the
   package-owned vLLM/SGLang paths; pass
   `--engine-probe-factory BACKEND=MODULE:CALLABLE` for a downstream adapter.
+- The native delegate factories and connector metadata make each target
+  provider-backed, so the Databricks probe job installs that backend's pinned
+  runtime (the patched vLLM wheel, `sglang==0.5.10.post1`). Without them a
+  release-safe target file still validates, but its probe tasks install no
+  engine to probe.
 - `--engine-probe-fixture-output-dir BACKEND=DIR` first writes a deterministic
   Qwen3 V1 probe fixture; when `--engine-probe-handoff-json` is omitted for that
   backend, the handoff is `DIR/qwen3-v1-fixture.handoff.json` and the actions
