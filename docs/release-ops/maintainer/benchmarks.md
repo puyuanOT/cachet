@@ -162,7 +162,7 @@ python -m document_kv_cache.benchmark_plan \
   --release-bundle-databricks-run-status-json /data/databricks-run-status-storage.json \
   --release-bundle-databricks-run-status-json /data/databricks-run-status-vllm-engine-probe.json \
   --release-bundle-databricks-run-status-json /data/databricks-run-status-sglang-engine-probe.json \
-  --release-bundle-package-wheel /data/dist/cachet_kv-0.2.0-py3-none-any.whl \
+  --release-bundle-package-wheel /data/dist/cachet_kv-0.3.0-py3-none-any.whl \
   --release-bundle-compatibility-benchmark-json /data/g5-v1-results.json \
   --release-bundle-pr-evidence-json /data/pr-evidence.json \
   --github-governance-output-json /data/github-governance.json \

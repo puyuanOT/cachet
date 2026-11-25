@@ -537,7 +537,7 @@ from document_kv_cache.planner import (
 )
 
 from document_kv_cache.pr_evidence import (
-    GPT55_REVIEW_OUTCOMES as GPT55_REVIEW_OUTCOMES,
+    PR_REVIEW_OUTCOMES as PR_REVIEW_OUTCOMES,
     PR_EVIDENCE_RECORD_TYPE as PR_EVIDENCE_RECORD_TYPE,
     PR_EVIDENCE_VALIDATION_RECORD_TYPE as PR_EVIDENCE_VALIDATION_RECORD_TYPE,
     PullRequestEvidence as PullRequestEvidence,

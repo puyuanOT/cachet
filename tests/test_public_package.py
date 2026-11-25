@@ -438,7 +438,7 @@ EXPECTED_DOCUMENT_ROOT_EXPORTS = (
     'WhitespaceTokenCounter',
     'CachePlanner',
     'CacheRequest',
-    'GPT55_REVIEW_OUTCOMES',
+    'PR_REVIEW_OUTCOMES',
     'PR_EVIDENCE_RECORD_TYPE',
     'PR_EVIDENCE_VALIDATION_RECORD_TYPE',
     'PullRequestEvidence',

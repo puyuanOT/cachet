@@ -64,7 +64,7 @@ from document_kv_cache.serving_env import (
 )
 
 
-WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl"
+WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/cachet_kv-0.3.0-py3-none-any.whl"
 CUSTOM_VLLM_EXTENSION_WHEEL_URI = (
     "/Volumes/catalog/schema/volume/wheels/custom_vllm_probe_extension-0.1.0-py3-none-any.whl"
 )
@@ -2158,7 +2158,7 @@ def test_generated_runner_installs_pip_packages_and_wheels_before_venv_reexec(tm
             "--pip-override-package",
             VLLM_FIPS_OPENCV_OVERRIDE_PACKAGE,
             "--package-wheel-uri",
-            "dbfs:/wheels/cachet_kv-0.2.0-py3-none-any.whl",
+            "dbfs:/wheels/cachet_kv-0.3.0-py3-none-any.whl",
             "--handoff-json",
             "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
             "--expected-backend",
@@ -2212,7 +2212,7 @@ def test_generated_runner_installs_pip_packages_and_wheels_before_venv_reexec(tm
             "pip",
             "install",
             "--no-deps",
-            "/dbfs/wheels/cachet_kv-0.2.0-py3-none-any.whl",
+            "/dbfs/wheels/cachet_kv-0.3.0-py3-none-any.whl",
         ),
     ]
     assert all(env is not None and "PYTHONPATH" not in env for env in install_envs)
@@ -2272,7 +2272,7 @@ def test_generated_runner_installs_locked_vllm_closure_and_patched_wheel(
     venv_dir = tmp_path / "serving-venv"
     venv_dir.mkdir()
     venv_python = venv_dir / ("Scripts" if os.name == "nt" else "bin") / "python"
-    cachet_wheel = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
+    cachet_wheel = tmp_path / "cachet_kv-0.3.0-py3-none-any.whl"
     lock_member = f"document_kv_cache/runtime_locks/{VLLM_RUNTIME_LOCK_FILENAME}"
     lock_bytes = vllm_runtime_lock_path().read_bytes()
     with zipfile.ZipFile(cachet_wheel, "w") as wheel:
@@ -2397,7 +2397,7 @@ def test_generated_runner_propagates_nonzero_venv_reexec_exit(tmp_path, monkeypa
             "--serving-venv-dir",
             str(venv_dir),
             "--package-wheel-uri",
-            "dbfs:/wheels/cachet_kv-0.2.0-py3-none-any.whl",
+            "dbfs:/wheels/cachet_kv-0.3.0-py3-none-any.whl",
             "--handoff-json",
             "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
         ],
@@ -2450,7 +2450,7 @@ def test_generated_runner_falls_back_to_virtualenv_when_stdlib_venv_lacks_ensure
             "--serving-venv-dir",
             str(venv_dir),
             "--package-wheel-uri",
-            "dbfs:/wheels/cachet_kv-0.2.0-py3-none-any.whl",
+            "dbfs:/wheels/cachet_kv-0.3.0-py3-none-any.whl",
             "--handoff-json",
             "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
         ],
@@ -2486,7 +2486,7 @@ def test_generated_runner_falls_back_to_virtualenv_when_stdlib_venv_lacks_ensure
             "pip",
             "install",
             "--no-deps",
-            "/dbfs/wheels/cachet_kv-0.2.0-py3-none-any.whl",
+            "/dbfs/wheels/cachet_kv-0.3.0-py3-none-any.whl",
         ),
     ]
 
@@ -2510,7 +2510,7 @@ def test_generated_runner_reexec_uses_compiled_path_when_databricks_exec_omits_f
             "--serving-venv-dir",
             str(venv_dir),
             "--package-wheel-uri",
-            "dbfs:/wheels/cachet_kv-0.2.0-py3-none-any.whl",
+            "dbfs:/wheels/cachet_kv-0.3.0-py3-none-any.whl",
             "--handoff-json",
             "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
         ],
@@ -3229,7 +3229,7 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
             "--serving-venv-dir",
             str(venv_dir),
             "--package-wheel-uri",
-            "dbfs:/tmp/cachet/cachet_kv-0.2.0-py3-none-any.whl",
+            "dbfs:/tmp/cachet/cachet_kv-0.3.0-py3-none-any.whl",
             "--package-wheel-uri",
             "dbfs:/tmp/cachet/custom_vllm_probe_extension-0.1.0-py3-none-any.whl",
             "--handoff-json",
@@ -3262,7 +3262,7 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
                 "pip",
                 "install",
                 "--no-deps",
-                "/dbfs/tmp/cachet/cachet_kv-0.2.0-py3-none-any.whl",
+                "/dbfs/tmp/cachet/cachet_kv-0.3.0-py3-none-any.whl",
             ],
             [
                 str(venv_python),

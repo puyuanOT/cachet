@@ -35,7 +35,7 @@ from document_kv_cache.sglang_smoke import (
 )
 
 
-WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl"
+WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/cachet_kv-0.3.0-py3-none-any.whl"
 SINGLE_USER_NAME = "user@example.com"
 HANDOFF_JSON = "/Volumes/catalog/schema/volume/live/sglang-live.handoff.json"
 PAGE_KEYS_JSON = '["page-a","page-b"]'
@@ -753,7 +753,7 @@ def test_generated_sglang_smoke_runner_installs_wheel_before_forwarding_args(tmp
             sys.executable,
             str(runner_path),
             "--package-wheel-uri",
-            "dbfs:/tmp/cachet/cachet_kv-0.2.0-py3-none-any.whl",
+            "dbfs:/tmp/cachet/cachet_kv-0.3.0-py3-none-any.whl",
             "--benchmark-id",
             "v1-sglang-smoke-001",
             "--output-dir",
@@ -771,7 +771,7 @@ def test_generated_sglang_smoke_runner_installs_wheel_before_forwarding_args(tmp
         "-m",
         "pip",
         "install",
-        "/dbfs/tmp/cachet/cachet_kv-0.2.0-py3-none-any.whl",
+        "/dbfs/tmp/cachet/cachet_kv-0.3.0-py3-none-any.whl",
     ]
     main_payload = json.loads(main_args_path.read_text(encoding="utf-8"))
     assert main_payload == {
@@ -781,7 +781,7 @@ def test_generated_sglang_smoke_runner_installs_wheel_before_forwarding_args(tmp
             "--output-dir",
             "/dbfs/tmp/cachet/output",
         ],
-        "package_install_spec": "/dbfs/tmp/cachet/cachet_kv-0.2.0-py3-none-any.whl",
+        "package_install_spec": "/dbfs/tmp/cachet/cachet_kv-0.3.0-py3-none-any.whl",
     }
     events = [
         json.loads(line)["event"]
