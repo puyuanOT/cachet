@@ -170,9 +170,16 @@ def execute_benchmark_job_plan(
     ``command_context`` is entered around each command by name, so a driver can
     bring up the serving process a benchmark command needs and stop it afterwards;
     a context that fails records the command as failed. ``env`` replaces the
-    inherited environment of every command when provided.
+    inherited environment of every command when provided. Isolated-arm plans
+    require ``command_context``: their merged record claims a separate serving
+    process per arm, which only the driver's context can guarantee.
     """
 
+    if plan.get("isolated_arm_jobs") is True and command_context is None and not dry_run:
+        raise ValueError(
+            "isolated-arm plans require a command_context that starts a separate serving "
+            "process for each arm"
+        )
     commands = tuple(_commands_from_plan(plan))
     results: list[BenchmarkCommandResult] = []
     for name, argv in commands:

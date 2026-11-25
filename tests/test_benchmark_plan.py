@@ -743,6 +743,40 @@ def test_build_v1_benchmark_plan_isolated_arm_jobs_run_each_arm_then_merge(tmp_p
     assert plan_source["benchmark_handoff_generation_datasets"] == list(SUPPORTED_V1_DATASETS)
     assert plan_source["benchmark_handoff_enrichment_datasets"] == list(SUPPORTED_V1_DATASETS)
     assert plan_source["command_count"] == len(plan.commands)
+    with pytest.raises(ValueError, match="cannot be written as a shell script"):
+        write_benchmark_job_plan_shell(plan, tmp_path / "plan.sh")
+    assert not (tmp_path / "plan.sh").exists()
+
+
+def test_main_rejects_plan_output_sh_for_isolated_arm_jobs(capsys, tmp_path):
+    exit_code = main(
+        [
+            *(
+                argument
+                for dataset in SUPPORTED_V1_DATASETS
+                for argument in ("--raw-dataset", f"{dataset}={tmp_path / 'raw' / f'{dataset}.jsonl'}")
+            ),
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--benchmark-output-json",
+            str(tmp_path / "results.json"),
+            "--runtime-id",
+            "databricks-run-1",
+            "--isolated-arm-jobs",
+            "--plan-output-json",
+            str(tmp_path / "plan.json"),
+            "--plan-output-sh",
+            str(tmp_path / "plan.sh"),
+        ]
+    )
+
+    record = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert "--plan-output-sh cannot be combined with --isolated-arm-jobs" in record["error"]
+    assert not (tmp_path / "plan.json").exists()
+    assert not (tmp_path / "plan.sh").exists()
 
 
 def test_build_v1_benchmark_plan_isolated_arm_jobs_default_to_registered_arms(tmp_path):

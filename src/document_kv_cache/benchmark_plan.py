@@ -922,7 +922,8 @@ def build_v1_benchmark_plan(config: BenchmarkPlanConfig) -> BenchmarkJobPlan:
             "Run these commands on an AWS g6/L4-compatible environment with the target server already listening.",
             "The benchmark compares baseline full-prefill requests with the document KV-cache arm.",
             "When configured, isolated arm jobs run each arm in its own runner process against a serving "
-            "process started for that arm, then merge and gate the combined comparison.",
+            "process the executing driver starts for that arm, then merge and gate the combined comparison; "
+            "such plans run only through execute_benchmark_job_plan with a command_context.",
             "When configured, benchmark handoff bundles are generated from prepared JSONL before enrichment.",
             "When configured, benchmark handoff enrichment runs after dataset preparation and before inference.",
             "When configured, the storage-reader benchmark runs after inference to capture selected reader load evidence on the same node.",
@@ -1143,6 +1144,12 @@ def write_benchmark_job_plan_json(plan: BenchmarkJobPlan, path: str | Path) -> N
 
 
 def write_benchmark_job_plan_shell(plan: BenchmarkJobPlan, path: str | Path) -> None:
+    if plan.config.isolated_arm_jobs:
+        raise ValueError(
+            "isolated-arm plans cannot be written as a shell script: each arm needs its own "
+            "serving process, which only a driver that passes command_context to "
+            "execute_benchmark_job_plan can provide"
+        )
     lines = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
@@ -2187,6 +2194,8 @@ def _validate_plan_output_paths(
     plan_output_sh: str | None,
     engine_probe_targets_output_json: str | None = None,
 ) -> None:
+    if config.isolated_arm_jobs and plan_output_sh is not None:
+        raise ValueError("--plan-output-sh cannot be combined with --isolated-arm-jobs")
     output_paths = list(_generated_artifact_output_paths(config))
     if plan_output_json is not None:
         output_paths.append(("plan_output_json", plan_output_json))

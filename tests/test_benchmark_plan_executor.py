@@ -253,6 +253,32 @@ def test_execute_benchmark_job_plan_records_command_context_failure_and_stops():
     assert record["commands"][0]["error"] == "RuntimeError: server did not become ready"
 
 
+def test_execute_benchmark_job_plan_requires_command_context_for_isolated_arm_plans(tmp_path, capsys):
+    marker = tmp_path / "ran.txt"
+    plan = {
+        "isolated_arm_jobs": True,
+        "commands": [
+            {
+                "name": "run-benchmark-baseline_prefill",
+                "argv": [sys.executable, "-c", f"open({str(marker)!r}, 'w').close()"],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="require a command_context"):
+        execute_benchmark_job_plan(plan)
+    assert execute_benchmark_job_plan(plan, dry_run=True)[0].skipped is True
+
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    exit_code = main(["--plan-json", str(plan_path)])
+    record = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert "require a command_context" in record["error"]
+    assert not marker.exists()
+
+
 def test_execute_benchmark_job_plan_json_loads_plan_file(tmp_path):
     path = tmp_path / "plan.json"
     path.write_text(json.dumps(plan_for((sys.executable, "-c", "pass"))), encoding="utf-8")
