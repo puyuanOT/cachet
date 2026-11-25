@@ -616,6 +616,7 @@ def generate_benchmark_handoff_bundles(
         raise ValueError("storage_layout must match layout.storage_layout")
     if kv_payload_axis_order_from_value(config.payload_axis_order) != layout.payload_axis_order:
         raise ValueError("payload_axis_order must match layout.payload_axis_order")
+    _require_generator_identity_matches(generator, config)
 
     examples = load_benchmark_jsonl(
         input_jsonl,
@@ -909,6 +910,26 @@ def enrich_benchmark_records_with_handoffs(
     if unmatched_keys and not allow_unmatched:
         raise ValueError("Unmatched handoff manifest entries for " + _format_keys(unmatched_keys))
     return tuple(enriched_records)
+
+
+_GENERATOR_IDENTITY_FIELDS = ("model_revision", "tokenizer_revision", "generator_family", "generator_version")
+
+
+def _require_generator_identity_matches(generator: KVChunkGenerator, config: CacheBuildConfig) -> None:
+    """Reject a resolved artifact identity the generator did not actually load.
+
+    Generators that do not declare an identity field are not checked for it.
+    """
+
+    for field_name in _GENERATOR_IDENTITY_FIELDS:
+        declared = getattr(generator, field_name, None)
+        stamped = getattr(config, field_name)
+        if declared is None or stamped == UNRESOLVED_IDENTITY or declared == stamped:
+            continue
+        raise ValueError(
+            f"{field_name} {stamped!r} does not match the generator's {declared!r}; "
+            "configure the generator with the same identity the artifacts claim"
+        )
 
 
 def _validated_arm_handoff_params(

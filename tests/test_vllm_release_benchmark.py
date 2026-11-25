@@ -48,6 +48,7 @@ EXAMPLES_PER_DATASET = 4
 
 CHUNK_TOKEN_GENERATOR_MODULE = '''
 import hashlib
+import os
 
 from document_kv_cache.artifact_identity import TokenContract
 from document_kv_cache.kvpack import PackChunk
@@ -62,6 +63,10 @@ class ChunkTokenPreRopeGenerator:
     rope_theta = QWEN3_4B_ROPE_THETA
     rope_rotary_dim = QWEN3_4B_ROPE_ROTARY_DIM
     layout = None
+
+    def __init__(self):
+        self.model_revision = os.environ.get("CACHET_TRANSFORMERS_MODEL_REVISION", "unresolved")
+        self.tokenizer_revision = os.environ.get("CACHET_TRANSFORMERS_TOKENIZER_REVISION", "unresolved")
 
     def bind_layout(self, layout):
         self.layout = layout
