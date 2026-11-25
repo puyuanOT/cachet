@@ -639,17 +639,32 @@ def test_parse_args_builds_release_benchmark_with_long_context(tmp_path):
             "--output-dir",
             str(tmp_path / "output"),
             *(argument for spec in specs for argument in ("--release-raw-dataset", spec)),
-            "--release-limit-per-dataset",
-            "54",
         ]
     )
 
     assert config.release_benchmark is not None
-    assert config.release_benchmark.limit_per_dataset == 54
+    assert config.release_benchmark.limit_per_dataset == vllm_smoke.RELEASE_LIMIT_PER_DATASET == 54
     assert config.max_model_len == vllm_smoke.RELEASE_MAX_MODEL_LEN
-    assert parse_args(["--benchmark-id", "smoke", "--output-dir", str(tmp_path)]).max_model_len == (
-        vllm_smoke.DEFAULT_MAX_MODEL_LEN
+    assert config.gpu_memory_utilization == vllm_smoke.RELEASE_GPU_MEMORY_UTILIZATION == 0.70
+    smoke = parse_args(["--benchmark-id", "smoke", "--output-dir", str(tmp_path)])
+    assert smoke.max_model_len == vllm_smoke.DEFAULT_MAX_MODEL_LEN
+    assert smoke.gpu_memory_utilization == vllm_smoke.DEFAULT_GPU_MEMORY_UTILIZATION
+
+
+def test_programmatic_release_config_uses_release_sizing_unless_overridden(tmp_path):
+    config = _release_config(tmp_path)
+    assert config.max_model_len == vllm_smoke.RELEASE_MAX_MODEL_LEN
+    assert config.gpu_memory_utilization == vllm_smoke.RELEASE_GPU_MEMORY_UTILIZATION
+    assert VLLMReleaseBenchmarkConfig(raw_dataset_specs=config.release_benchmark.raw_dataset_specs).limit_per_dataset == 54
+
+    overridden = VLLMSmokeBenchmarkConfig(
+        benchmark_id="release-e2e",
+        output_dir=tmp_path / "output",
+        max_model_len=32768,
+        gpu_memory_utilization=0.6,
+        release_benchmark=config.release_benchmark,
     )
+    assert (overridden.max_model_len, overridden.gpu_memory_utilization) == (32768, 0.6)
 
 
 @pytest.mark.parametrize(

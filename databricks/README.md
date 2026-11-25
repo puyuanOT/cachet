@@ -155,6 +155,7 @@ cachet-vllm-smoke-databricks-job \
   --single-user-name user@example.com \
   --hardware-target aws-g6-l4 \
   --gpu-memory-utilization 0.70 \
+  --release-limit-per-dataset 54 \
   --release-raw-dataset biography=/Volumes/catalog/schema/volume/raw/biography.jsonl \
   --release-raw-dataset hotpotqa=/Volumes/catalog/schema/volume/raw/hotpotqa.jsonl \
   --release-raw-dataset musique=/Volumes/catalog/schema/volume/raw/musique.jsonl \

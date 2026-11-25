@@ -111,6 +111,14 @@ VLLM_USE_FLASHINFER_SAMPLER_ENV = "VLLM_USE_FLASHINFER_SAMPLER"
 DOCUMENT_KV_EVICT_PAGE_CACHE_ENV = "DOCUMENT_KV_EVICT_PAGE_CACHE"
 DEFAULT_MAX_MODEL_LEN = 4096
 RELEASE_MAX_MODEL_LEN = 40960
+DEFAULT_GPU_MEMORY_UTILIZATION = 0.85
+# The provider stages each request's payload on the GPU outside vLLM's budget
+# (about 4.5 GiB for a 32K-token NIAH document), which 0.80 leaves no room for
+# on 24 GB GPUs.
+RELEASE_GPU_MEMORY_UTILIZATION = 0.70
+# Clears the 50-row release gate per dataset and covers NIAH's nine cells evenly;
+# full datasets would not fit their handoffs on local disk.
+RELEASE_LIMIT_PER_DATASET = 54
 RELEASE_GENERATOR_FACTORY = (
     "document_kv_cache.transformers_generator:build_pre_rope_transformers_kv_chunk_generator"
 )
@@ -132,6 +140,9 @@ __all__ = [
     "DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV",
     "DEFAULT_MAX_MODEL_LEN",
     "RELEASE_MAX_MODEL_LEN",
+    "DEFAULT_GPU_MEMORY_UTILIZATION",
+    "RELEASE_GPU_MEMORY_UTILIZATION",
+    "RELEASE_LIMIT_PER_DATASET",
     "RELEASE_GENERATOR_FACTORY",
     "VLLMSmokeBenchmarkConfig",
     "VLLMPreparedHandoffGenerationConfig",
@@ -209,6 +220,25 @@ class VLLMPreparedHandoffGenerationConfig:
         }
 
 
+def resolve_release_sized_defaults(
+    max_model_len: int | None,
+    gpu_memory_utilization: float | None,
+    *,
+    release: bool,
+) -> tuple[int, float]:
+    """Fill unset vLLM sizing with the release values or the smoke defaults, then validate."""
+
+    if max_model_len is None:
+        max_model_len = RELEASE_MAX_MODEL_LEN if release else DEFAULT_MAX_MODEL_LEN
+    if gpu_memory_utilization is None:
+        gpu_memory_utilization = RELEASE_GPU_MEMORY_UTILIZATION if release else DEFAULT_GPU_MEMORY_UTILIZATION
+    if max_model_len <= 0:
+        raise ValueError("max_model_len must be positive")
+    if not 0 < gpu_memory_utilization <= 1:
+        raise ValueError("gpu_memory_utilization must be in (0, 1]")
+    return max_model_len, gpu_memory_utilization
+
+
 @dataclass(frozen=True, slots=True)
 class VLLMReleaseBenchmarkConfig:
     """Publication-policy release benchmark driven by a V1 benchmark plan.
@@ -222,7 +252,7 @@ class VLLMReleaseBenchmarkConfig:
     generator_factory: str = RELEASE_GENERATOR_FACTORY
     cache_method: str = RELEASE_CACHE_METHOD
     model_revision: str = QWEN3_4B_INSTRUCT_HF_REVISION
-    limit_per_dataset: int | None = None
+    limit_per_dataset: int | None = RELEASE_LIMIT_PER_DATASET
     warmups: int = 1
 
     def __post_init__(self) -> None:
@@ -269,9 +299,9 @@ class VLLMSmokeBenchmarkConfig:
     server_host: str = SERVER_HOST
     server_port: int = SERVER_PORT
     client_host: str = SERVER_HOST
-    max_model_len: int = DEFAULT_MAX_MODEL_LEN
+    max_model_len: int | None = None
     max_num_seqs: int = 2
-    gpu_memory_utilization: float = 0.85
+    gpu_memory_utilization: float | None = None
     benchmark_repeats: int = 1
     hardware_target: str = DEFAULT_HARDWARE_TARGET
     dataset_specs: tuple[str, ...] = ()
@@ -301,12 +331,15 @@ class VLLMSmokeBenchmarkConfig:
             raise ValueError("server_port must be between 1 and 65535")
         if not self.client_host:
             raise ValueError("client_host must be non-empty")
-        if self.max_model_len <= 0:
-            raise ValueError("max_model_len must be positive")
+        max_model_len, gpu_memory_utilization = resolve_release_sized_defaults(
+            self.max_model_len,
+            self.gpu_memory_utilization,
+            release=self.release_benchmark is not None,
+        )
+        object.__setattr__(self, "max_model_len", max_model_len)
+        object.__setattr__(self, "gpu_memory_utilization", gpu_memory_utilization)
         if self.max_num_seqs <= 0:
             raise ValueError("max_num_seqs must be positive")
-        if not 0 < self.gpu_memory_utilization <= 1:
-            raise ValueError("gpu_memory_utilization must be in (0, 1]")
         if isinstance(self.benchmark_repeats, bool) or not isinstance(self.benchmark_repeats, int):
             raise TypeError("benchmark_repeats must be a positive integer")
         if self.benchmark_repeats <= 0:
@@ -2089,7 +2122,14 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         ),
     )
     parser.add_argument("--max-num-seqs", type=int, default=2)
-    parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
+    parser.add_argument(
+        "--gpu-memory-utilization",
+        type=float,
+        help=(
+            f"Defaults to {DEFAULT_GPU_MEMORY_UTILIZATION}, or {RELEASE_GPU_MEMORY_UTILIZATION} for release "
+            "benchmarks, which stage long cache payloads on the GPU outside vLLM's budget."
+        ),
+    )
     parser.add_argument(
         "--hardware-target",
         choices=SUPPORTED_V1_HARDWARE_TARGETS,
@@ -2160,7 +2200,12 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
             "the comparison on latency."
         ),
     )
-    parser.add_argument("--release-limit-per-dataset", type=int)
+    parser.add_argument(
+        "--release-limit-per-dataset",
+        type=int,
+        default=RELEASE_LIMIT_PER_DATASET,
+        help=f"Rows prepared per raw dataset (default {RELEASE_LIMIT_PER_DATASET}).",
+    )
     parser.add_argument("--release-warmups", type=int, default=1)
     parser.add_argument("--release-model-revision", default=QWEN3_4B_INSTRUCT_HF_REVISION)
     parser.add_argument("--release-generator-factory", default=RELEASE_GENERATOR_FACTORY)
@@ -2168,9 +2213,6 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     output_dir = Path(_cluster_file_path(args.output_dir))
     handoff_generation = _handoff_generation_config_from_args(args, output_dir=output_dir)
     release_benchmark = _release_benchmark_config_from_args(args)
-    max_model_len = args.max_model_len
-    if max_model_len is None:
-        max_model_len = DEFAULT_MAX_MODEL_LEN if release_benchmark is None else RELEASE_MAX_MODEL_LEN
     return VLLMSmokeBenchmarkConfig(
         benchmark_id=args.benchmark_id,
         output_dir=output_dir,
@@ -2182,7 +2224,7 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         server_host=args.server_host,
         server_port=args.server_port,
         client_host=args.client_host,
-        max_model_len=max_model_len,
+        max_model_len=args.max_model_len,
         max_num_seqs=args.max_num_seqs,
         gpu_memory_utilization=args.gpu_memory_utilization,
         benchmark_repeats=args.benchmark_repeats,

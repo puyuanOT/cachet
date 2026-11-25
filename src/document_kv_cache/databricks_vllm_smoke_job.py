@@ -29,14 +29,19 @@ from document_kv_cache.databricks_job import (
 from document_kv_cache.quality_v2 import QUALITY_V2_MAX_TOKENS
 from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_REVISION
 from document_kv_cache.vllm_smoke import (
+    DEFAULT_GPU_MEMORY_UTILIZATION,
     DEFAULT_LOCAL_ROOT,
     DEFAULT_MAX_MODEL_LEN,
+    RELEASE_CACHE_METHOD,
     RELEASE_GENERATOR_FACTORY,
+    RELEASE_GPU_MEMORY_UTILIZATION,
+    RELEASE_LIMIT_PER_DATASET,
     RELEASE_MAX_MODEL_LEN,
     SERVER_HOST,
     SERVER_PORT,
     VLLMReleaseBenchmarkConfig,
     parse_dataset_specs,
+    resolve_release_sized_defaults,
 )
 
 
@@ -115,7 +120,7 @@ class DatabricksVLLMSmokeJobConfig:
     client_host: str = SERVER_HOST
     max_model_len: int | None = None
     max_num_seqs: int = 2
-    gpu_memory_utilization: float = 0.85
+    gpu_memory_utilization: float | None = None
     benchmark_repeats: int = 1
     payload_cache_max_bytes: int = 0
     dataset_specs: tuple[str, ...] = ()
@@ -163,16 +168,15 @@ class DatabricksVLLMSmokeJobConfig:
             raise ValueError("server_port must be between 1 and 65535")
         if not self.client_host:
             raise ValueError("client_host must be non-empty")
-        max_model_len = self.max_model_len
-        if max_model_len is None:
-            max_model_len = DEFAULT_MAX_MODEL_LEN if self.release_benchmark is None else RELEASE_MAX_MODEL_LEN
-            object.__setattr__(self, "max_model_len", max_model_len)
-        if max_model_len <= 0:
-            raise ValueError("max_model_len must be positive")
+        max_model_len, gpu_memory_utilization = resolve_release_sized_defaults(
+            self.max_model_len,
+            self.gpu_memory_utilization,
+            release=self.release_benchmark is not None,
+        )
+        object.__setattr__(self, "max_model_len", max_model_len)
+        object.__setattr__(self, "gpu_memory_utilization", gpu_memory_utilization)
         if self.max_num_seqs <= 0:
             raise ValueError("max_num_seqs must be positive")
-        if not 0 < self.gpu_memory_utilization <= 1:
-            raise ValueError("gpu_memory_utilization must be in (0, 1]")
         if isinstance(self.benchmark_repeats, bool) or not isinstance(self.benchmark_repeats, int):
             raise TypeError("benchmark_repeats must be a positive integer")
         if self.benchmark_repeats <= 0:
@@ -207,6 +211,11 @@ class DatabricksVLLMSmokeJobConfig:
                 )
             if self.payload_cache_max_bytes:
                 raise ValueError("release_benchmark requires the payload cache to be disabled for cold reads")
+            if self.release_benchmark.cache_method != RELEASE_CACHE_METHOD:
+                raise ValueError(
+                    f"the Databricks release job runs the {RELEASE_CACHE_METHOD!r} cache method only, "
+                    f"not {self.release_benchmark.cache_method!r}"
+                )
         object.__setattr__(self, "spark_env_vars", _validated_spark_env_vars(self.spark_env_vars))
         _DEFAULT_CLUSTER_CONFIG_FROM_VLLM_SMOKE_JOB(self)
 
@@ -379,7 +388,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=f"Defaults to {DEFAULT_MAX_MODEL_LEN}, or {RELEASE_MAX_MODEL_LEN} with --release-raw-dataset.",
     )
     parser.add_argument("--max-num-seqs", type=int, default=2)
-    parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
+    parser.add_argument(
+        "--gpu-memory-utilization",
+        type=float,
+        help=(
+            f"Defaults to {DEFAULT_GPU_MEMORY_UTILIZATION}, or {RELEASE_GPU_MEMORY_UTILIZATION} "
+            "with --release-raw-dataset."
+        ),
+    )
     parser.add_argument(
         "--benchmark-repeats",
         type=int,
@@ -427,7 +443,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Repeat for all four V1 datasets."
         ),
     )
-    parser.add_argument("--release-limit-per-dataset", type=int)
+    parser.add_argument(
+        "--release-limit-per-dataset",
+        type=int,
+        default=RELEASE_LIMIT_PER_DATASET,
+        help=f"Rows prepared per raw dataset (default {RELEASE_LIMIT_PER_DATASET}).",
+    )
     parser.add_argument("--release-warmups", type=int, default=1)
     parser.add_argument("--release-model-revision", default=QWEN3_4B_INSTRUCT_HF_REVISION)
     parser.add_argument("--release-generator-factory", default=RELEASE_GENERATOR_FACTORY)

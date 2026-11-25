@@ -240,8 +240,6 @@ def test_main_release_benchmark_parameters_round_trip_through_the_smoke_runner(t
             "--wheel-uri",
             WHEEL_URI,
             *(item for spec in DATASET_SPECS for item in ("--release-raw-dataset", spec)),
-            "--release-limit-per-dataset",
-            "54",
             "--release-warmups",
             "2",
             "--output-json",
@@ -252,12 +250,15 @@ def test_main_release_benchmark_parameters_round_trip_through_the_smoke_runner(t
     assert exit_code == 0
     parameters = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]["spark_python_task"]["parameters"]
     assert parameters[parameters.index("--max-model-len") + 1] == str(RELEASE_MAX_MODEL_LEN)
+    assert parameters[parameters.index("--gpu-memory-utilization") + 1] == "0.7"
+    assert parameters[parameters.index("--release-limit-per-dataset") + 1] == "54"
     assert "--payload-cache-max-bytes" not in parameters
     assert "--dataset" not in parameters
 
     smoke_config = parse_args(parameters[: parameters.index("--package-wheel-uri")])
 
     assert smoke_config.max_model_len == RELEASE_MAX_MODEL_LEN
+    assert smoke_config.gpu_memory_utilization == 0.7
     assert smoke_config.release_benchmark == VLLMReleaseBenchmarkConfig(
         raw_dataset_specs=DATASET_SPECS,
         limit_per_dataset=54,
@@ -276,11 +277,16 @@ def test_databricks_vllm_smoke_config_rejects_release_with_prepared_inputs_or_pa
     }
 
     assert DatabricksVLLMSmokeJobConfig(**base).max_model_len == RELEASE_MAX_MODEL_LEN
-    assert DatabricksVLLMSmokeJobConfig(**{**base, "release_benchmark": None}).max_model_len == 4096
+    assert DatabricksVLLMSmokeJobConfig(**base).gpu_memory_utilization == 0.70
+    smoke = DatabricksVLLMSmokeJobConfig(**{**base, "release_benchmark": None})
+    assert (smoke.max_model_len, smoke.gpu_memory_utilization) == (4096, 0.85)
     with pytest.raises(ValueError, match="do not combine"):
         DatabricksVLLMSmokeJobConfig(**base, dataset_specs=DATASET_SPECS)
     with pytest.raises(ValueError, match="payload cache to be disabled"):
         DatabricksVLLMSmokeJobConfig(**base, payload_cache_max_bytes=1024)
+    other_method = VLLMReleaseBenchmarkConfig(raw_dataset_specs=DATASET_SPECS, cache_method="cacheblend")
+    with pytest.raises(ValueError, match="runs the 'vanilla_prefill' cache method only, not 'cacheblend'"):
+        DatabricksVLLMSmokeJobConfig(**{**base, "release_benchmark": other_method})
 
 
 def test_write_databricks_vllm_smoke_runner_script_imports_smoke_main(tmp_path):

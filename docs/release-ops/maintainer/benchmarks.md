@@ -280,13 +280,16 @@ where Vanilla does not meet answer-quality non-inferiority on HotpotQA or
 MusiQue. `--max-model-len` defaults to 40960 so the 32K-token NIAH cell fits.
 The vLLM provider copies each cache request's payload to the GPU in one piece,
 outside vLLM's memory budget (about 4.5 GiB for a 32K-token NIAH document), so
-24 GB GPUs (L4, A10G) need `--gpu-memory-utilization 0.70`; at 0.80 that copy
-runs out of GPU memory. Handoffs are stored twice (build shard and per-request payload), at about
-147 KB per token for Qwen3 4B in bfloat16. The first 54 rows of each staged
-dataset (six per NIAH cell) hold about 1.1 million document tokens, so
-`--release-limit-per-dataset 54` needs about 330 GB on `/local_disk0`.
-`--release-limit-per-dataset`, `--release-warmups`, `--release-model-revision`,
-and `--release-generator-factory` adjust the plan.
+release runs default to `--gpu-memory-utilization 0.70`, which 24 GB GPUs (L4,
+A10G) need; at 0.80 that copy runs out of GPU memory. Each dataset's prompts are
+checked against the context budget before its handoffs are generated. Handoffs
+are stored twice (build shard and per-request payload), at about 147 KB per
+token for Qwen3 4B in bfloat16. The default `--release-limit-per-dataset 54`
+takes the first 54 rows of each staged dataset (six per NIAH cell), about 1.1
+million document tokens, which need about 330 GB on `/local_disk0`; full
+datasets do not fit. `--release-limit-per-dataset`, `--release-warmups`,
+`--release-model-revision`, and `--release-generator-factory` adjust the plan.
+The Databricks job runs only the `vanilla_prefill` method.
 
 ## Dataset Prep And Runner
 
