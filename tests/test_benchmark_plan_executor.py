@@ -202,6 +202,57 @@ def test_execute_benchmark_job_plan_records_nonzero_return_code_and_stops():
     assert record["commands"][0]["error"] is None
 
 
+def test_execute_benchmark_job_plan_wraps_each_command_in_command_context():
+    from contextlib import contextmanager
+
+    events = []
+
+    @contextmanager
+    def command_context(name):
+        events.append(("enter", name))
+        yield
+        events.append(("exit", name))
+
+    results = execute_benchmark_job_plan(
+        {
+            "commands": [
+                {"name": "first", "argv": [sys.executable, "-c", "pass"]},
+                {"name": "second", "argv": [sys.executable, "-c", "pass"]},
+            ]
+        },
+        command_context=command_context,
+    )
+
+    assert [result.returncode for result in results] == [0, 0]
+    assert events == [("enter", "first"), ("exit", "first"), ("enter", "second"), ("exit", "second")]
+
+
+def test_execute_benchmark_job_plan_records_command_context_failure_and_stops():
+    from contextlib import contextmanager
+
+    @contextmanager
+    def command_context(name):
+        if name == "serve":
+            raise RuntimeError("server did not become ready")
+        yield
+
+    results = execute_benchmark_job_plan(
+        {
+            "commands": [
+                {"name": "serve", "argv": [sys.executable, "-c", "pass"]},
+                {"name": "skip", "argv": [sys.executable, "-c", "pass"]},
+            ]
+        },
+        command_context=command_context,
+    )
+    record = benchmark_command_results_to_record(results)
+
+    assert len(results) == 1
+    assert record["ok"] is False
+    assert record["commands"][0]["returncode"] == 1
+    assert record["commands"][0]["error"] == "RuntimeError: server did not become ready"
+
+
 def test_execute_benchmark_job_plan_json_loads_plan_file(tmp_path):
     path = tmp_path / "plan.json"
     path.write_text(json.dumps(plan_for((sys.executable, "-c", "pass"))), encoding="utf-8")

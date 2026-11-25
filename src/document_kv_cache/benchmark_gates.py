@@ -41,6 +41,7 @@ from document_kv_cache.quality_v2 import quality_v2_scorer_registry
 BENCHMARK_PUBLICATION_GATE_RECORD_TYPE = "document_kv.benchmark_publication_gate.v1"
 BENCHMARK_EVIDENCE_GATE_RECORD_TYPE = "document_kv.benchmark_evidence_gate.v1"
 CACHE_STATE_ATTESTATION_RECORD_TYPE = "document_kv.cache_state_attestation.v1"
+VLLM_NATIVE_PROVIDER_LOAD_RECORD_TYPE = "document_kv.vllm_native_provider_load.v1"
 _NO_EXTRACTION_SHA256 = sha256(
     FINAL_ANSWER_NO_EXTRACTION_VALUE.encode("utf-8")
 ).hexdigest()
@@ -49,6 +50,7 @@ __all__ = [
     "BENCHMARK_PUBLICATION_GATE_RECORD_TYPE",
     "BENCHMARK_EVIDENCE_GATE_RECORD_TYPE",
     "CACHE_STATE_ATTESTATION_RECORD_TYPE",
+    "VLLM_NATIVE_PROVIDER_LOAD_RECORD_TYPE",
     "CacheStateAttestation",
     "BenchmarkPublicationGateConfig",
     "BenchmarkPublicationGateResult",
@@ -815,7 +817,7 @@ def cache_state_attestation_from_vllm_telemetry(
 
     if not isinstance(record, Mapping):
         raise TypeError("vLLM telemetry record must be a mapping")
-    if record.get("record_type") != "document_kv.vllm_native_provider_load.v1":
+    if record.get("record_type") != VLLM_NATIVE_PROVIDER_LOAD_RECORD_TYPE:
         raise ValueError("unsupported vLLM telemetry record_type")
     state = record.get("cache_state_attestation")
     if not isinstance(state, Mapping):

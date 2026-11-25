@@ -1059,6 +1059,13 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
             "TokenContract, and payload hashes. Such bundles are not publication-ready."
         ),
     )
+    parser.add_argument(
+        "--artifact-identity-output-json",
+        help=(
+            "Write the bundle's ArtifactIdentity record here for benchmark_runner "
+            "--artifact-identity-json publication gating."
+        ),
+    )
     try:
         args = parser.parse_args(argv)
         layout = _bundle_layout_from_args(args)
@@ -1109,6 +1116,18 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
             uc_volume_root=args.uc_volume_root,
             require_artifact_contract=not args.allow_uncontracted_artifact,
         )
+        if args.artifact_identity_output_json is not None:
+            identity = result.cache_generation.artifact_identity
+            if identity is None:
+                raise ValueError(
+                    "--artifact-identity-output-json requires a generator that stamps ArtifactIdentity"
+                )
+            identity_path = local_path(args.artifact_identity_output_json)
+            identity_path.parent.mkdir(parents=True, exist_ok=True)
+            identity_path.write_text(
+                json.dumps(identity.to_record(), indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
         print(
             json.dumps(
                 {

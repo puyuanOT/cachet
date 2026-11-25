@@ -10,10 +10,11 @@ import math
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias
 
 from document_kv_cache.benchmarks import SUPPORTED_V1_DATASETS
 from document_kv_cache.storage import local_path
@@ -61,6 +62,10 @@ _BENCHMARK_JOB_PLAN_KEYS = frozenset(
         "benchmark_handoff_dtype",
         "benchmark_handoff_backend",
         "benchmark_handoff_sglang_hicache_page_size",
+        "benchmark_handoff_cache_method",
+        "benchmark_handoff_segment_per_document",
+        "benchmark_handoff_generator_version",
+        "isolated_arm_jobs",
         "planned_engine_probes",
         "notes",
     }
@@ -112,6 +117,7 @@ _BENCHMARK_JOB_PLAN_EXPERIMENT_KEYS = frozenset(
         "reference_arm_id",
     }
 )
+BenchmarkCommandContext: TypeAlias = Callable[[str], AbstractContextManager[object]]
 _HANDOFF_GENERATION_PREFIX = "generate-"
 _HANDOFF_GENERATION_SUFFIX = "-handoff-bundles"
 _HANDOFF_ENRICHMENT_PREFIX = "enrich-"
@@ -120,6 +126,7 @@ _HANDOFF_ENRICHMENT_SUFFIX = "-handoffs"
 __all__ = [
     "BENCHMARK_PLAN_EXECUTION_RECORD_TYPE",
     "BENCHMARK_PLAN_SOURCE_RECORD_TYPE",
+    "BenchmarkCommandContext",
     "BenchmarkCommandResult",
     "execute_benchmark_job_plan",
     "execute_benchmark_job_plan_json",
@@ -155,7 +162,17 @@ def execute_benchmark_job_plan(
     *,
     dry_run: bool = False,
     cwd: str | Path | None = None,
+    command_context: BenchmarkCommandContext | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[BenchmarkCommandResult, ...]:
+    """Run plan commands in order, stopping at the first failure.
+
+    ``command_context`` is entered around each command by name, so a driver can
+    bring up the serving process a benchmark command needs and stop it afterwards;
+    a context that fails records the command as failed. ``env`` replaces the
+    inherited environment of every command when provided.
+    """
+
     commands = tuple(_commands_from_plan(plan))
     results: list[BenchmarkCommandResult] = []
     for name, argv in commands:
@@ -164,9 +181,27 @@ def execute_benchmark_job_plan(
             results.append(BenchmarkCommandResult(name=name, argv=runtime_argv, returncode=0, skipped=True))
             continue
         try:
-            completed = subprocess.run(runtime_argv, cwd=str(cwd) if cwd is not None else None, check=False)
+            with nullcontext() if command_context is None else command_context(name):
+                completed = subprocess.run(
+                    runtime_argv,
+                    cwd=str(cwd) if cwd is not None else None,
+                    check=False,
+                    env=None if env is None else dict(env),
+                )
         except OSError as exc:
             results.append(BenchmarkCommandResult(name=name, argv=runtime_argv, returncode=127, error=str(exc)))
+            break
+        except Exception as exc:
+            if command_context is None:
+                raise
+            results.append(
+                BenchmarkCommandResult(
+                    name=name,
+                    argv=runtime_argv,
+                    returncode=1,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            )
             break
         results.append(BenchmarkCommandResult(name=name, argv=runtime_argv, returncode=completed.returncode))
         if completed.returncode != 0:

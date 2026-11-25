@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from document_kv_cache.benchmarks import (
+    BASELINE_PREFILL_ARM,
+    CACHE_REUSE_ARM,
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
     SUPPORTED_V1_DATASETS,
@@ -25,6 +27,7 @@ from document_kv_cache._native_probe_metadata import (
 )
 from document_kv_cache.engine_adapters import PayloadMode, ServingBackend
 from document_kv_cache.engine_protocol import dtype_byte_width
+from document_kv_cache.methods import CACHET_ARTIFACT_EXECUTION, default_method_registry
 from document_kv_cache.native_probe_factories import (
     builtin_native_probe_factory_path,
     native_probe_adapter_contract_to_record,
@@ -53,6 +56,8 @@ DEFAULT_STORAGE_BENCHMARK_ALIGN_BYTES = 4096
 DEFAULT_STORAGE_BENCHMARK_PLAN_READERS = ("memory", "disk")
 DEFAULT_BENCHMARK_HANDOFF_BUNDLE_DIRNAME = "handoff-bundles"
 DEFAULT_BENCHMARK_HANDOFF_BUNDLE_SHARD_FILENAME = "cachet-benchmark.kvpack"
+ISOLATED_ARM_COMMAND_PREFIX = "run-benchmark-"
+ISOLATED_ARM_MERGE_COMMAND = "merge-benchmark-arms"
 DEFAULT_ENGINE_LAUNCH_CONFIG_FILENAMES = {
     ServingBackend.VLLM: "vllm-launch-config.json",
     ServingBackend.SGLANG: "sglang-launch-config.json",
@@ -486,6 +491,10 @@ class BenchmarkPlanConfig:
     benchmark_handoff_dtype: str | None = None
     benchmark_handoff_backend: ServingBackend | str = ServingBackend.VLLM
     benchmark_handoff_sglang_hicache_page_size: int | None = None
+    benchmark_handoff_cache_method: str | None = None
+    benchmark_handoff_segment_per_document: bool = False
+    benchmark_handoff_generator_version: str = "unresolved"
+    isolated_arm_jobs: bool = False
     storage_benchmark: StorageBenchmarkPlanConfig | None = None
     engine_probes: tuple[EngineProbePlanConfig, ...] = ()
     release_evidence: ReleaseEvidencePlanConfig | None = None
@@ -705,6 +714,24 @@ class BenchmarkPlanConfig:
             and self.benchmark_handoff_generator_factory is None
         ):
             raise ValueError("benchmark_handoff_dtype requires benchmark_handoff_generator_factory")
+        if type(self.benchmark_handoff_segment_per_document) is not bool:
+            raise ValueError("benchmark_handoff_segment_per_document must be a boolean")
+        if not isinstance(self.benchmark_handoff_generator_version, str) or not self.benchmark_handoff_generator_version:
+            raise ValueError("benchmark_handoff_generator_version must be non-empty")
+        if self.benchmark_handoff_generator_factory is None and (
+            self.benchmark_handoff_cache_method is not None
+            or self.benchmark_handoff_segment_per_document
+            or self.benchmark_handoff_generator_version != "unresolved"
+        ):
+            raise ValueError(
+                "benchmark handoff method and generator options require benchmark_handoff_generator_factory"
+            )
+        if self.benchmark_handoff_cache_method is not None:
+            _validate_benchmark_handoff_cache_method(self.benchmark_handoff_cache_method)
+        if type(self.isolated_arm_jobs) is not bool:
+            raise ValueError("isolated_arm_jobs must be a boolean")
+        if self.isolated_arm_jobs:
+            _validate_isolated_arm_jobs(self)
         if self.benchmark_handoff_generator_factory is not None:
             if self.benchmark_handoff_output_dir is None:
                 raise ValueError("benchmark_handoff_generator_factory requires benchmark_handoff_output_dir")
@@ -825,15 +852,27 @@ class BenchmarkPlanConfig:
 
 @dataclass(frozen=True, slots=True)
 class BenchmarkJobPlan:
+    """Ordered plan commands.
+
+    With isolated arm jobs, ``arm_benchmark_commands`` run one arm each and
+    ``benchmark_command`` merges and gates their records.
+    """
+
     config: BenchmarkPlanConfig
     preparation_commands: tuple[BenchmarkCommand, ...]
     benchmark_command: BenchmarkCommand
     post_benchmark_commands: tuple[BenchmarkCommand, ...] = field(default_factory=tuple)
     notes: tuple[str, ...] = field(default_factory=tuple)
+    arm_benchmark_commands: tuple[BenchmarkCommand, ...] = field(default_factory=tuple)
 
     @property
     def commands(self) -> tuple[BenchmarkCommand, ...]:
-        return (*self.preparation_commands, self.benchmark_command, *self.post_benchmark_commands)
+        return (
+            *self.preparation_commands,
+            *self.arm_benchmark_commands,
+            self.benchmark_command,
+            *self.post_benchmark_commands,
+        )
 
 
 def build_v1_benchmark_plan(config: BenchmarkPlanConfig) -> BenchmarkJobPlan:
@@ -864,14 +903,26 @@ def build_v1_benchmark_plan(config: BenchmarkPlanConfig) -> BenchmarkJobPlan:
         post_benchmark_commands.append(_release_evidence_command(config))
     if config.release_bundle is not None:
         post_benchmark_commands.append(_release_bundle_command(config))
+    if config.isolated_arm_jobs:
+        arm_benchmark_commands = tuple(
+            _isolated_arm_benchmark_command(config, arm_id, arm_spec_json)
+            for arm_id, arm_spec_json in _isolated_benchmark_arms(config)
+        )
+        benchmark_command = _isolated_arm_merge_command(config)
+    else:
+        arm_benchmark_commands = ()
+        benchmark_command = _benchmark_runner_command(config)
     return BenchmarkJobPlan(
         config=config,
         preparation_commands=preparation_commands,
-        benchmark_command=_benchmark_runner_command(config),
+        arm_benchmark_commands=arm_benchmark_commands,
+        benchmark_command=benchmark_command,
         post_benchmark_commands=tuple(post_benchmark_commands),
         notes=(
             "Run these commands on an AWS g6/L4-compatible environment with the target server already listening.",
             "The benchmark compares baseline full-prefill requests with the document KV-cache arm.",
+            "When configured, isolated arm jobs run each arm in its own runner process against a serving "
+            "process started for that arm, then merge and gate the combined comparison.",
             "When configured, benchmark handoff bundles are generated from prepared JSONL before enrichment.",
             "When configured, benchmark handoff enrichment runs after dataset preparation and before inference.",
             "When configured, the storage-reader benchmark runs after inference to capture selected reader load evidence on the same node.",
@@ -1016,6 +1067,10 @@ def benchmark_job_plan_to_record(plan: BenchmarkJobPlan) -> dict[str, Any]:
         "benchmark_handoff_sglang_hicache_page_size": (
             plan.config.benchmark_handoff_sglang_hicache_page_size
         ),
+        "benchmark_handoff_cache_method": plan.config.benchmark_handoff_cache_method,
+        "benchmark_handoff_segment_per_document": plan.config.benchmark_handoff_segment_per_document,
+        "benchmark_handoff_generator_version": plan.config.benchmark_handoff_generator_version,
+        "isolated_arm_jobs": plan.config.isolated_arm_jobs,
         "planned_engine_probes": [_planned_engine_probe_to_record(probe) for probe in plan.config.engine_probes],
         "notes": list(plan.notes),
     }
@@ -1137,7 +1192,7 @@ def _benchmark_handoff_bundle_command(
         raise ValueError("benchmark handoff bundle generation requires a generator factory and output directory")
     if dataset_path.handoff_manifest_json is None:
         raise ValueError("benchmark handoff bundle generation requires handoff_manifest_json")
-    argv = (
+    argv: tuple[str, ...] = (
         config.python_executable,
         "-m",
         "document_kv_cache.benchmark_handoff_bundles",
@@ -1157,7 +1212,21 @@ def _benchmark_handoff_bundle_command(
         config.benchmark_handoff_backend.value,
         "--model-id",
         config.model_id,
+        "--artifact-identity-output-json",
+        _benchmark_handoff_artifact_identity_json(config, dataset_path.dataset),
     )
+    for flag, value in (
+        ("--model-revision", config.model_revision),
+        ("--tokenizer-id", config.tokenizer_id),
+        ("--tokenizer-revision", config.tokenizer_revision),
+        ("--generator-version", config.benchmark_handoff_generator_version),
+    ):
+        if value != "unresolved":
+            argv = (*argv, flag, value)
+    if config.benchmark_handoff_cache_method is not None:
+        argv = (*argv, "--cache-method", config.benchmark_handoff_cache_method)
+    if config.benchmark_handoff_segment_per_document:
+        argv = (*argv, "--segment-per-document")
     if config.benchmark_handoff_dtype is not None:
         argv = (*argv, "--dtype", config.benchmark_handoff_dtype)
     if config.benchmark_handoff_sglang_hicache_page_size is not None:
@@ -1194,6 +1263,154 @@ def _benchmark_handoff_command(config: BenchmarkPlanConfig, dataset_path: Benchm
 
 
 def _benchmark_runner_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
+    return BenchmarkCommand(
+        name="run-benchmark",
+        argv=_benchmark_runner_argv(
+            config,
+            runtime_id=config.runtime_id,
+            output_json=config.benchmark_output_json,
+            arm_specs_json=config.benchmark_arm_specs_json,
+            arm_spec_json_files=config.benchmark_arm_spec_json_files,
+            artifact_identity_jsons=_benchmark_artifact_identity_jsons(config),
+            cache_state_attestation_jsons=config.cache_state_attestation_jsons,
+            evidence_gate_output_json=config.evidence_gate_output_json,
+            reference_arm_id=config.reference_arm_id,
+        ),
+    )
+
+
+def _isolated_arm_benchmark_command(
+    config: BenchmarkPlanConfig,
+    arm_id: str,
+    arm_spec_json: str | None,
+) -> BenchmarkCommand:
+    argv = _benchmark_runner_argv(
+        config,
+        runtime_id=f"{config.runtime_id}:{arm_id}",
+        output_json=_isolated_arm_output_json(config, arm_id),
+        arm_specs_json=() if arm_spec_json is None else (arm_spec_json,),
+        arm_spec_json_files=(),
+        artifact_identity_jsons=(),
+        cache_state_attestation_jsons=(),
+        evidence_gate_output_json=None,
+        # A one-arm source is its own local reference; the merge names the
+        # comparison reference.
+        reference_arm_id=arm_id if config.comparison_mode == "single_method_setting_variation" else "",
+    )
+    if arm_spec_json is None:
+        argv = (*argv, "--arm", arm_id)
+    return BenchmarkCommand(name=f"{ISOLATED_ARM_COMMAND_PREFIX}{arm_id}", argv=argv)
+
+
+def _isolated_arm_merge_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
+    argv: tuple[str, ...] = (
+        config.python_executable,
+        "-m",
+        "document_kv_cache.benchmark_runner",
+        "merge-isolated",
+        "--reference-arm-id",
+        _isolated_reference_arm_id(config),
+        "--comparison-mode",
+        config.comparison_mode,
+        "--evidence-policy",
+        config.evidence_policy,
+        "--output-json",
+        config.benchmark_output_json,
+    )
+    for arm_id, _arm_spec_json in _isolated_benchmark_arms(config):
+        argv = (*argv, "--record-json", _isolated_arm_output_json(config, arm_id))
+    if config.varied_setting:
+        argv = (*argv, "--varied-setting", config.varied_setting)
+    for identity_json in _benchmark_artifact_identity_jsons(config):
+        argv = (*argv, "--artifact-identity-json", identity_json)
+    for attestation_json in config.cache_state_attestation_jsons:
+        argv = (*argv, "--cache-state-attestation-json", attestation_json)
+    if config.evidence_gate_output_json is not None:
+        argv = (*argv, "--evidence-gate-output-json", config.evidence_gate_output_json)
+    return BenchmarkCommand(name=ISOLATED_ARM_MERGE_COMMAND, argv=argv)
+
+
+def _isolated_benchmark_arms(config: BenchmarkPlanConfig) -> tuple[tuple[str, str | None], ...]:
+    if not config.benchmark_arm_specs_json:
+        return ((BASELINE_PREFILL_ARM, None), (CACHE_REUSE_ARM, None))
+    return tuple(
+        (str(json.loads(arm_spec_json)["arm_id"]), arm_spec_json)
+        for arm_spec_json in config.benchmark_arm_specs_json
+    )
+
+
+def _isolated_reference_arm_id(config: BenchmarkPlanConfig) -> str:
+    if config.reference_arm_id:
+        return config.reference_arm_id
+    if not config.benchmark_arm_specs_json:
+        return BASELINE_PREFILL_ARM
+    for arm_spec_json in config.benchmark_arm_specs_json:
+        spec = json.loads(arm_spec_json)
+        if spec.get("uses_cache") is False:
+            return str(spec["arm_id"])
+    raise ValueError("isolated arm jobs require reference_arm_id or a non-cache arm spec")
+
+
+def _isolated_arm_output_json(config: BenchmarkPlanConfig, arm_id: str) -> str:
+    output = config.benchmark_output_json
+    stem, dot, suffix = output.rpartition(".")
+    if not dot or "/" in suffix:
+        return f"{output}.{arm_id}"
+    return f"{stem}.{arm_id}.{suffix}"
+
+
+def _validate_isolated_arm_jobs(config: BenchmarkPlanConfig) -> None:
+    if config.runtime_id == "unresolved":
+        raise ValueError("isolated_arm_jobs requires a resolved runtime_id")
+    if config.benchmark_arm_spec_json_files:
+        raise ValueError("isolated_arm_jobs requires inline benchmark_arm_specs_json, not arm-spec files")
+    arms = _isolated_benchmark_arms(config)
+    if len(arms) < 2:
+        raise ValueError("isolated_arm_jobs requires at least two benchmark arms")
+    if config.reference_arm_id and config.reference_arm_id not in {arm_id for arm_id, _spec in arms}:
+        raise ValueError("isolated_arm_jobs reference_arm_id must name a planned arm")
+    _isolated_reference_arm_id(config)
+
+
+def _validate_benchmark_handoff_cache_method(cache_method: str) -> None:
+    spec = default_method_registry().get(cache_method, require_implemented=True)
+    if spec.execution_kind != CACHET_ARTIFACT_EXECUTION:
+        raise ValueError(
+            f"benchmark_handoff_cache_method {cache_method!r} is engine-native and cannot generate handoff bundles"
+        )
+
+
+def _benchmark_artifact_identity_jsons(config: BenchmarkPlanConfig) -> tuple[str, ...]:
+    generated = (
+        tuple(
+            _benchmark_handoff_artifact_identity_json(config, dataset_path.dataset)
+            for dataset_path in config.dataset_paths
+            if dataset_path.handoff_manifest_json is not None
+        )
+        if config.benchmark_handoff_generator_factory is not None
+        else ()
+    )
+    return tuple(dict.fromkeys((*config.artifact_identity_jsons, *generated)))
+
+
+def _benchmark_handoff_artifact_identity_json(config: BenchmarkPlanConfig, dataset: str) -> str:
+    if config.benchmark_handoff_output_dir is None:
+        raise ValueError("benchmark_handoff_output_dir must be configured")
+    return _uri_child(config.benchmark_handoff_output_dir, f"{dataset}-artifact-identity.json")
+
+
+def _benchmark_runner_argv(
+    config: BenchmarkPlanConfig,
+    *,
+    runtime_id: str,
+    output_json: str,
+    arm_specs_json: Sequence[str],
+    arm_spec_json_files: Sequence[str],
+    artifact_identity_jsons: Sequence[str],
+    cache_state_attestation_jsons: Sequence[str],
+    evidence_gate_output_json: str | None,
+    reference_arm_id: str,
+) -> tuple[str, ...]:
     argv: tuple[str, ...] = (
         config.python_executable,
         "-m",
@@ -1251,7 +1468,7 @@ def _benchmark_runner_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         "--hardware-fingerprint",
         config.hardware_fingerprint,
         "--runtime-id",
-        config.runtime_id,
+        runtime_id,
         "--runtime-version",
         config.runtime_version,
         "--storage-identity",
@@ -1263,7 +1480,7 @@ def _benchmark_runner_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         "--timeout-seconds",
         str(config.timeout_seconds),
         "--output-json",
-        config.benchmark_output_json,
+        output_json,
     )
     if config.canonical_model_id:
         argv = (*argv, "--canonical-model-id", config.canonical_model_id)
@@ -1286,22 +1503,22 @@ def _benchmark_runner_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         argv = (*argv, "--dataset", f"{dataset_path.dataset}={_benchmark_dataset_jsonl(dataset_path)}")
     for scope in config.measurement_scopes:
         argv = (*argv, "--measurement-scope", scope)
-    for arm_spec_json in config.benchmark_arm_specs_json:
+    for arm_spec_json in arm_specs_json:
         argv = (*argv, "--arm-spec-json", arm_spec_json)
-    for arm_spec_json_file in config.benchmark_arm_spec_json_files:
+    for arm_spec_json_file in arm_spec_json_files:
         argv = (*argv, "--arm-spec-json-file", arm_spec_json_file)
     for package_revision in config.package_revisions:
         argv = (*argv, "--package-revision", package_revision)
-    for identity_json in config.artifact_identity_jsons:
+    for identity_json in artifact_identity_jsons:
         argv = (*argv, "--artifact-identity-json", identity_json)
-    for attestation_json in config.cache_state_attestation_jsons:
+    for attestation_json in cache_state_attestation_jsons:
         argv = (*argv, "--cache-state-attestation-json", attestation_json)
     if config.cache_base_url is not None:
         argv = (*argv, "--cache-base-url", config.cache_base_url)
     if config.limit_per_dataset is not None:
         argv = (*argv, "--limit-per-dataset", str(config.limit_per_dataset))
-    if config.evidence_gate_output_json is not None:
-        argv = (*argv, "--evidence-gate-output-json", config.evidence_gate_output_json)
+    if evidence_gate_output_json is not None:
+        argv = (*argv, "--evidence-gate-output-json", evidence_gate_output_json)
     if config.input_tokens_target is not None:
         argv = (*argv, "--input-tokens-target", str(config.input_tokens_target))
     if config.benchmark_seed is not None:
@@ -1318,8 +1535,8 @@ def _benchmark_runner_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         argv = (*argv, "--complete-dataset-split")
     if config.varied_setting:
         argv = (*argv, "--varied-setting", config.varied_setting)
-    if config.reference_arm_id:
-        argv = (*argv, "--reference-arm-id", config.reference_arm_id)
+    if reference_arm_id:
+        argv = (*argv, "--reference-arm-id", reference_arm_id)
     if not config.stream:
         argv = (*argv, "--no-stream")
     if config.cache_runtime_prompt:
@@ -1330,7 +1547,7 @@ def _benchmark_runner_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         argv = (*argv, "--baseline-extra-body-json", config.baseline_extra_body_json)
     if config.cache_extra_body_json is not None:
         argv = (*argv, "--cache-extra-body-json", config.cache_extra_body_json)
-    return BenchmarkCommand(name="run-benchmark", argv=argv)
+    return argv
 
 
 def _benchmark_dataset_jsonl(dataset_path: BenchmarkDatasetPath) -> str:
@@ -1995,6 +2212,19 @@ def _generated_artifact_output_paths(config: BenchmarkPlanConfig) -> tuple[tuple
             for dataset_path in config.dataset_paths
             if dataset_path.handoff_manifest_json is not None
         )
+        output_paths.extend(
+            (
+                f"dataset_paths[{dataset_path.dataset}].artifact_identity_json",
+                _benchmark_handoff_artifact_identity_json(config, dataset_path.dataset),
+            )
+            for dataset_path in config.dataset_paths
+            if dataset_path.handoff_manifest_json is not None
+        )
+    if config.isolated_arm_jobs:
+        output_paths.extend(
+            (f"isolated_arm_jobs[{arm_id}].output_json", _isolated_arm_output_json(config, arm_id))
+            for arm_id, _arm_spec_json in _isolated_benchmark_arms(config)
+        )
     if config.storage_benchmark is not None:
         output_paths.append(("storage_benchmark.output_json", config.storage_benchmark.output_json))
     output_paths.extend(
@@ -2320,6 +2550,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--no-isolate-arms", dest="isolate_arms", action="store_false")
     parser.set_defaults(isolate_arms=True)
     parser.add_argument(
+        "--isolated-arm-jobs",
+        action="store_true",
+        help=(
+            "Plan one runner command per arm, each against its own serving process, "
+            "followed by a merge that gates the combined comparison. Requires --runtime-id."
+        ),
+    )
+    parser.add_argument(
         "--prefix-cache-salt-mode",
         choices=("static", "per_request"),
         default="static",
@@ -2446,6 +2684,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             "When planning generated SGLang handoff bundles, include "
             "document_kv.sglang_hicache_page_keys computed with this HiCache page size."
         ),
+    )
+    parser.add_argument(
+        "--benchmark-handoff-cache-method",
+        help="Registered Cachet artifact method for generated handoff bundles, for example vanilla_prefill.",
+    )
+    parser.add_argument(
+        "--benchmark-handoff-segment-per-document",
+        action="store_true",
+        help="Generate one KV chunk per document for multi-document examples (Vanilla).",
+    )
+    parser.add_argument(
+        "--benchmark-handoff-generator-version",
+        default="unresolved",
+        help="Generator library version recorded in generated artifact identities.",
     )
     parser.add_argument(
         "--storage-benchmark-workspace-dir",
@@ -2761,6 +3013,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             generation_seed=args.generation_seed,
             interleave_examples=args.interleave_examples,
             isolate_arms=args.isolate_arms,
+            isolated_arm_jobs=args.isolated_arm_jobs,
             prefix_cache_salt_mode=args.prefix_cache_salt_mode,
             evidence_policy=args.evidence_policy,
             evidence_gate_output_json=evidence_gate_output_json,
@@ -2817,6 +3070,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             benchmark_handoff_dtype=args.benchmark_handoff_dtype,
             benchmark_handoff_backend=args.benchmark_handoff_backend or ServingBackend.VLLM,
             benchmark_handoff_sglang_hicache_page_size=args.benchmark_handoff_sglang_hicache_page_size,
+            benchmark_handoff_cache_method=args.benchmark_handoff_cache_method,
+            benchmark_handoff_segment_per_document=args.benchmark_handoff_segment_per_document,
+            benchmark_handoff_generator_version=args.benchmark_handoff_generator_version,
             benchmark_output_json=args.benchmark_output_json
             or str(prepared_dir / f"{args.suite_id}-results.json"),
             storage_benchmark=_storage_benchmark_config_from_cli(args, prepared_dir=prepared_dir),

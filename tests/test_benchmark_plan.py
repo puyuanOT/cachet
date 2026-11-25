@@ -21,6 +21,7 @@ from document_kv_cache.benchmark_plan import (
     write_engine_probe_targets_json,
     write_benchmark_job_plan_shell,
 )
+from document_kv_cache.benchmarks import SUPPORTED_V1_DATASETS
 from document_kv_cache.databricks_engine_probe_job import (
     SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
     VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
@@ -51,6 +52,19 @@ def dataset_paths(tmp_path):
             prepared_jsonl=str(tmp_path / "prepared" / f"{dataset}.jsonl"),
         )
         for dataset in ("biography", "hotpotqa", "musique", "niah")
+    )
+
+
+def _v1_handoff_dataset_paths(tmp_path):
+    return tuple(
+        BenchmarkDatasetPath(
+            dataset=dataset,
+            raw_jsonl=str(tmp_path / "raw" / f"{dataset}.jsonl"),
+            prepared_jsonl=str(tmp_path / "prepared" / f"{dataset}.jsonl"),
+            handoff_manifest_json=str(tmp_path / "handoff-bundles" / f"{dataset}-manifest.json"),
+            handoff_jsonl=str(tmp_path / "prepared" / f"{dataset}.handoffs.jsonl"),
+        )
+        for dataset in SUPPORTED_V1_DATASETS
     )
 
 
@@ -589,10 +603,196 @@ def test_build_v1_benchmark_plan_generates_handoff_bundles_before_enrichment(tmp
         "sglang",
         "--model-id",
         "qwen3:4b-instruct",
+        "--artifact-identity-output-json",
+        str(tmp_path / "handoff-bundles" / "biography-artifact-identity.json"),
         "--sglang-hicache-page-size",
         "16",
     )
     assert enrich_command.name == "enrich-biography-handoffs"
+    runner_argv = plan.benchmark_command.argv
+    identity_index = runner_argv.index("--artifact-identity-json")
+    assert runner_argv[identity_index + 1] == str(
+        tmp_path / "handoff-bundles" / "biography-artifact-identity.json"
+    )
+
+
+def test_build_v1_benchmark_plan_forwards_vanilla_generation_provenance(tmp_path):
+    paths = (
+        BenchmarkDatasetPath(
+            dataset="hotpotqa",
+            raw_jsonl=str(tmp_path / "raw" / "hotpotqa.jsonl"),
+            prepared_jsonl=str(tmp_path / "prepared" / "hotpotqa.jsonl"),
+            handoff_manifest_json=str(tmp_path / "handoffs" / "hotpotqa-manifest.json"),
+            handoff_jsonl=str(tmp_path / "prepared" / "hotpotqa.handoffs.jsonl"),
+        ),
+    )
+    config = BenchmarkPlanConfig(
+        suite_id="v1-g6-l4",
+        dataset_paths=paths,
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results.json"),
+        require_all_v1_datasets=False,
+        benchmark_handoff_generator_factory="my_runtime.kv_generator:create_generator",
+        benchmark_handoff_output_dir=str(tmp_path / "handoff-bundles"),
+        benchmark_handoff_cache_method="vanilla_prefill",
+        benchmark_handoff_segment_per_document=True,
+        benchmark_handoff_generator_version="5.24.0",
+        model_revision="model-sha",
+        tokenizer_id="Qwen/Qwen3-4B-Instruct-2507",
+        tokenizer_revision="tokenizer-sha",
+    )
+
+    bundle_argv = build_v1_benchmark_plan(config).preparation_commands[1].argv
+
+    assert bundle_argv[bundle_argv.index("--model-revision") + 1] == "model-sha"
+    assert bundle_argv[bundle_argv.index("--tokenizer-id") + 1] == "Qwen/Qwen3-4B-Instruct-2507"
+    assert bundle_argv[bundle_argv.index("--tokenizer-revision") + 1] == "tokenizer-sha"
+    assert bundle_argv[bundle_argv.index("--generator-version") + 1] == "5.24.0"
+    assert bundle_argv[bundle_argv.index("--cache-method") + 1] == "vanilla_prefill"
+    assert "--segment-per-document" in bundle_argv
+
+
+def test_benchmark_plan_config_rejects_handoff_method_options_without_generator(tmp_path):
+    with pytest.raises(ValueError, match="require benchmark_handoff_generator_factory"):
+        BenchmarkPlanConfig(
+            suite_id="v1-g6-l4",
+            dataset_paths=dataset_paths(tmp_path),
+            base_url="http://localhost:8000",
+            benchmark_output_json=str(tmp_path / "results.json"),
+            benchmark_handoff_cache_method="vanilla_prefill",
+        )
+
+
+def test_benchmark_plan_config_rejects_unregistered_handoff_cache_method(tmp_path):
+    with pytest.raises(KeyError):
+        BenchmarkPlanConfig(
+            suite_id="v1-g6-l4",
+            dataset_paths=_v1_handoff_dataset_paths(tmp_path),
+            base_url="http://localhost:8000",
+            benchmark_output_json=str(tmp_path / "results.json"),
+            benchmark_handoff_generator_factory="my_runtime.kv_generator:create_generator",
+            benchmark_handoff_output_dir=str(tmp_path / "handoff-bundles"),
+            benchmark_handoff_cache_method="not_a_method",
+        )
+
+
+def test_build_v1_benchmark_plan_isolated_arm_jobs_run_each_arm_then_merge(tmp_path):
+    from document_kv_cache.benchmark_plan_executor import benchmark_plan_source_payload_to_record
+    from document_kv_cache.benchmarks import baseline_prefill_arm, method_benchmark_arm
+    from document_kv_cache.vllm_smoke import benchmark_arm_spec
+
+    baseline_spec = json.dumps(benchmark_arm_spec(baseline_prefill_arm()))
+    cache_spec = json.dumps(
+        benchmark_arm_spec(method_benchmark_arm("vanilla_prefill", arm_id="document_kv_cache"))
+    )
+    config = BenchmarkPlanConfig(
+        suite_id="v1-g6-l4",
+        dataset_paths=_v1_handoff_dataset_paths(tmp_path),
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results.json"),
+        evidence_gate_output_json=str(tmp_path / "gate.json"),
+        evidence_policy="publication",
+        benchmark_handoff_generator_factory="my_runtime.kv_generator:create_generator",
+        benchmark_handoff_output_dir=str(tmp_path / "handoff-bundles"),
+        cache_state_attestation_jsons=(str(tmp_path / "telemetry.jsonl"),),
+        benchmark_arm_specs_json=(baseline_spec, cache_spec),
+        runtime_id="databricks-run-1",
+        isolated_arm_jobs=True,
+    )
+
+    plan = build_v1_benchmark_plan(config)
+    record = benchmark_job_plan_to_record(plan)
+    names = [command.name for command in plan.commands]
+    baseline_argv = plan.arm_benchmark_commands[0].argv
+    cache_argv = plan.arm_benchmark_commands[1].argv
+    merge_argv = plan.benchmark_command.argv
+
+    assert names[-3:] == [
+        "run-benchmark-baseline_prefill",
+        "run-benchmark-document_kv_cache",
+        "merge-benchmark-arms",
+    ]
+    assert baseline_argv[baseline_argv.index("--runtime-id") + 1] == "databricks-run-1:baseline_prefill"
+    assert cache_argv[cache_argv.index("--runtime-id") + 1] == "databricks-run-1:document_kv_cache"
+    assert baseline_argv[baseline_argv.index("--output-json") + 1] == str(
+        tmp_path / "results.baseline_prefill.json"
+    )
+    assert baseline_argv.count("--arm-spec-json") == 1
+    assert baseline_argv[baseline_argv.index("--arm-spec-json") + 1] == baseline_spec
+    for arm_argv in (baseline_argv, cache_argv):
+        assert "--evidence-gate-output-json" not in arm_argv
+        assert "--artifact-identity-json" not in arm_argv
+        assert "--cache-state-attestation-json" not in arm_argv
+        assert "--reference-arm-id" not in arm_argv
+    assert merge_argv[:4] == ("python", "-m", "document_kv_cache.benchmark_runner", "merge-isolated")
+    assert merge_argv[merge_argv.index("--reference-arm-id") + 1] == "baseline_prefill"
+    assert merge_argv[merge_argv.index("--evidence-policy") + 1] == "publication"
+    assert merge_argv[merge_argv.index("--output-json") + 1] == str(tmp_path / "results.json")
+    assert merge_argv[merge_argv.index("--evidence-gate-output-json") + 1] == str(tmp_path / "gate.json")
+    assert merge_argv[merge_argv.index("--cache-state-attestation-json") + 1] == str(
+        tmp_path / "telemetry.jsonl"
+    )
+    assert merge_argv.count("--record-json") == 2
+    assert merge_argv.count("--artifact-identity-json") == 4
+    assert record["isolated_arm_jobs"] is True
+    plan_source = benchmark_plan_source_payload_to_record(
+        "plan.json",
+        tmp_path / "plan.json",
+        json.dumps(record).encode("utf-8"),
+    )
+    assert plan_source["benchmark_handoff_generation_datasets"] == list(SUPPORTED_V1_DATASETS)
+    assert plan_source["benchmark_handoff_enrichment_datasets"] == list(SUPPORTED_V1_DATASETS)
+    assert plan_source["command_count"] == len(plan.commands)
+
+
+def test_build_v1_benchmark_plan_isolated_arm_jobs_default_to_registered_arms(tmp_path):
+    config = BenchmarkPlanConfig(
+        suite_id="v1-g6-l4",
+        dataset_paths=dataset_paths(tmp_path),
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results"),
+        runtime_id="databricks-run-1",
+        isolated_arm_jobs=True,
+    )
+
+    plan = build_v1_benchmark_plan(config)
+
+    assert [command.argv[-2:] for command in plan.arm_benchmark_commands] == [
+        ("--arm", "baseline_prefill"),
+        ("--arm", "document_kv_cache"),
+    ]
+    assert plan.arm_benchmark_commands[0].argv[
+        plan.arm_benchmark_commands[0].argv.index("--output-json") + 1
+    ] == str(tmp_path / "results.baseline_prefill")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    (
+        ({}, "resolved runtime_id"),
+        ({"runtime_id": "run", "benchmark_arm_spec_json_files": ("arms.json",)}, "not arm-spec files"),
+        (
+            {
+                "runtime_id": "run",
+                "benchmark_arm_specs_json": (
+                    json.dumps({"arm_id": "baseline_prefill", "uses_cache": False, "description": "baseline"}),
+                ),
+            },
+            "at least two benchmark arms",
+        ),
+        ({"runtime_id": "run", "reference_arm_id": "missing"}, "must name a planned arm"),
+    ),
+)
+def test_benchmark_plan_config_rejects_invalid_isolated_arm_jobs(tmp_path, overrides, message):
+    with pytest.raises(ValueError, match=message):
+        BenchmarkPlanConfig(
+            suite_id="v1-g6-l4",
+            dataset_paths=dataset_paths(tmp_path),
+            base_url="http://localhost:8000",
+            benchmark_output_json=str(tmp_path / "results.json"),
+            isolated_arm_jobs=True,
+            **overrides,
+        )
 
 
 def test_benchmark_dataset_path_rejects_incomplete_handoff_configuration(tmp_path):
