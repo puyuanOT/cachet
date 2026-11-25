@@ -353,10 +353,10 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
                 release.model_revision,
                 "--release-warmups",
                 str(release.warmups),
+                "--release-limit-per-dataset",
+                str(release.limit_per_dataset),
             ]
         )
-        if release.limit_per_dataset is not None:
-            parameters.extend(["--release-limit-per-dataset", str(release.limit_per_dataset)])
     return parameters
 
 

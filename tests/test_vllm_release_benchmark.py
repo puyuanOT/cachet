@@ -42,6 +42,7 @@ from document_kv_cache.vllm_smoke import (
     build_vllm_server_args,
     parse_args,
     run_vllm_release_benchmark,
+    run_vllm_smoke_benchmark,
 )
 
 
@@ -538,6 +539,21 @@ def test_release_benchmark_refuses_a_node_whose_gpu_does_not_match_the_target(tm
     assert not config.release_plan_path.exists()
 
 
+def test_release_smoke_run_checks_the_gpu_before_installing_the_runtime(tmp_path, monkeypatch):
+    config = _release_config(tmp_path)
+    monkeypatch.setattr(vllm_smoke, "gpu_hardware_fingerprint", lambda: "nvidia:NVIDIA A10G, 23028 MiB, 580.00")
+
+    def unexpected_install(*_args, **_kwargs):
+        raise AssertionError("runtime install started on a mismatched GPU")
+
+    monkeypatch.setattr(vllm_smoke, "create_venv", unexpected_install)
+
+    with pytest.raises(ValueError, match="'aws-g6-l4' expects NVIDIA L4 GPUs"):
+        run_vllm_smoke_benchmark(config)
+
+    assert not config.metadata_path.exists()
+
+
 def test_release_plan_config_matches_generated_vanilla_artifact_contract(tmp_path):
     config = _release_config(tmp_path)
 
@@ -745,6 +761,12 @@ def test_programmatic_release_config_uses_release_sizing_unless_overridden(tmp_p
     assert config.max_model_len == vllm_smoke.RELEASE_MAX_MODEL_LEN
     assert config.gpu_memory_utilization == vllm_smoke.RELEASE_GPU_MEMORY_UTILIZATION
     assert VLLMReleaseBenchmarkConfig(raw_dataset_specs=config.release_benchmark.raw_dataset_specs).limit_per_dataset == 54
+    for limit in (None, 0, True):
+        with pytest.raises(ValueError, match="limit_per_dataset must be a positive integer"):
+            VLLMReleaseBenchmarkConfig(
+                raw_dataset_specs=config.release_benchmark.raw_dataset_specs,
+                limit_per_dataset=limit,
+            )
 
     overridden = VLLMSmokeBenchmarkConfig(
         benchmark_id="release-e2e",

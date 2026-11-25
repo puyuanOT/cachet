@@ -253,7 +253,7 @@ class VLLMReleaseBenchmarkConfig:
     generator_factory: str = RELEASE_GENERATOR_FACTORY
     cache_method: str = RELEASE_CACHE_METHOD
     model_revision: str = QWEN3_4B_INSTRUCT_HF_REVISION
-    limit_per_dataset: int | None = RELEASE_LIMIT_PER_DATASET
+    limit_per_dataset: int = RELEASE_LIMIT_PER_DATASET
     warmups: int = 1
 
     def __post_init__(self) -> None:
@@ -265,9 +265,7 @@ class VLLMReleaseBenchmarkConfig:
                 raise ValueError(f"release {field_name} must be non-empty")
         if self.model_revision == "unresolved":
             raise ValueError("release model_revision must be a resolved revision")
-        if self.limit_per_dataset is not None and (
-            type(self.limit_per_dataset) is not int or self.limit_per_dataset <= 0
-        ):
+        if type(self.limit_per_dataset) is not int or self.limit_per_dataset <= 0:
             raise ValueError("release limit_per_dataset must be a positive integer")
         if type(self.warmups) is not int or self.warmups < 0:
             raise ValueError("release warmups must be a non-negative integer")
@@ -470,6 +468,8 @@ class VLLMSmokeBenchmarkConfig:
 def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     """Create an isolated vLLM env, start Qwen3, and run the V1 smoke suite."""
 
+    if config.release_benchmark is not None:
+        validate_gpu_fingerprint_for_hardware_target(gpu_hardware_fingerprint(), config.hardware_target)
     config.output_dir.mkdir(parents=True, exist_ok=True)
     config.local_dir.mkdir(parents=True, exist_ok=True)
     os.environ["HF_HOME"] = str(config.hf_cache_dir)
@@ -931,6 +931,7 @@ def validate_prompt_token_budget(
     *,
     record_path: Path | None = None,
 ) -> None:
+    assert config.max_model_len is not None
     record_path = config.prompt_token_budget_path if record_path is None else record_path
     rows = build_prompt_token_budget_rows(config, dataset_paths)
     write_prompt_token_budget_jsonl(config.prompt_token_budget_input_path, rows)
@@ -1862,7 +1863,7 @@ def start_vllm_server(
     log_path: Path,
     *,
     telemetry_jsonl: Path | None = None,
-) -> subprocess.Popen:
+) -> subprocess.Popen[str]:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     argv = build_vllm_server_args(config, python_executable, telemetry_jsonl=telemetry_jsonl)
     env = server_env(config)
@@ -1899,7 +1900,7 @@ def wait_for_port_release(config: VLLMSmokeBenchmarkConfig, *, timeout_seconds: 
 
 
 def wait_for_server(
-    server: subprocess.Popen,
+    server: subprocess.Popen[str],
     log_path: Path,
     config: VLLMSmokeBenchmarkConfig,
     *,
@@ -1987,7 +1988,7 @@ def build_benchmark_runner_args(
     return args
 
 
-def terminate_process(process: subprocess.Popen) -> None:
+def terminate_process(process: subprocess.Popen[str]) -> None:
     """Stop a server started by ``start_vllm_server`` and every worker in its session."""
 
     if process.poll() is None:
@@ -2000,7 +2001,7 @@ def terminate_process(process: subprocess.Popen) -> None:
     _signal_process_group(process, signal.SIGKILL)
 
 
-def _signal_process_group(process: subprocess.Popen, sig: signal.Signals) -> None:
+def _signal_process_group(process: subprocess.Popen[str], sig: signal.Signals) -> None:
     try:
         os.killpg(process.pid, sig)
     except (ProcessLookupError, PermissionError):
