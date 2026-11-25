@@ -280,7 +280,7 @@ def _patch_release_runtime(monkeypatch, root: Path, *, attest: bool = True):
     monkeypatch.setattr(
         vllm_smoke,
         "validate_prompt_token_budget",
-        lambda config, dataset_paths: budget_checks.append(dataset_paths),
+        lambda config, dataset_paths, *, record_path: budget_checks.append((dataset_paths, record_path)),
     )
     monkeypatch.setattr(vllm_smoke, "gpu_hardware_fingerprint", lambda: "nvidia:NVIDIA L4, 23034 MiB, 580.00")
     return config, servers, budget_checks
@@ -319,7 +319,13 @@ def test_release_benchmark_plan_publishes_a_cold_latency_gate_end_to_end(release
         f"vllm-server-{BASELINE_PREFILL_ARM}.log",
         f"vllm-server-{CACHE_REUSE_ARM}.log",
     ]
-    assert len(budget_checks) == 1
+    assert [list(dataset_paths) for dataset_paths, _record_path in budget_checks] == [
+        [dataset] for dataset in vllm_smoke.SMOKE_DATASETS
+    ]
+    for dataset_paths, record_path in budget_checks:
+        (dataset,) = dataset_paths
+        assert dataset_paths[dataset] == config.release_prepared_dir / f"{dataset}.jsonl"
+        assert record_path == config.release_prompt_token_budget_path(dataset)
     baseline_requests = servers[0][1].requests
     cache_requests = servers[1][1].requests
     assert baseline_requests and not any("kv_transfer_params" in body for body in baseline_requests)
@@ -506,6 +512,121 @@ def test_release_server_evicts_page_cache(tmp_path, monkeypatch):
     vllm_smoke.start_vllm_server(config, config.venv_python, tmp_path / "server.log")
 
     assert launched["env"][vllm_smoke.DOCUMENT_KV_EVICT_PAGE_CACHE_ENV] == "1"
+    assert launched["start_new_session"] is True
+
+
+def _process_running(pid: int) -> bool:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="needs Linux /proc")
+def test_terminate_process_stops_the_servers_worker_processes(tmp_path):
+    child_pid_path = tmp_path / "child.pid"
+    script = (
+        "import os, subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        f"open({str(child_pid_path)!r} + '.tmp', 'w').write(str(child.pid))\n"
+        f"os.replace({str(child_pid_path)!r} + '.tmp', {str(child_pid_path)!r})\n"
+        "time.sleep(120)\n"
+    )
+    server = vllm_smoke.subprocess.Popen([sys.executable, "-c", script], start_new_session=True)
+    deadline = time.monotonic() + 30
+    while not child_pid_path.exists():
+        assert server.poll() is None and time.monotonic() < deadline
+        time.sleep(0.05)
+    child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+
+    vllm_smoke.terminate_process(server)
+
+    assert server.returncode is not None
+    deadline = time.monotonic() + 10
+    while _process_running(child_pid):
+        assert time.monotonic() < deadline, "the server's worker process survived teardown"
+        time.sleep(0.05)
+
+
+def test_release_arm_refuses_to_start_while_the_port_is_still_served(tmp_path, monkeypatch):
+    started = []
+    monkeypatch.setattr(vllm_smoke, "start_vllm_server", lambda *args, **kwargs: started.append(args))
+    wait_for_port_release = vllm_smoke.wait_for_port_release
+    monkeypatch.setattr(
+        vllm_smoke,
+        "wait_for_port_release",
+        lambda config: wait_for_port_release(config, timeout_seconds=0.2),
+    )
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        config = _release_config(tmp_path, port=listener.getsockname()[1])
+
+        with pytest.raises(RuntimeError, match="still accepting connections"):
+            with vllm_smoke.release_command_context(config)(f"{ISOLATED_ARM_COMMAND_PREFIX}{BASELINE_PREFILL_ARM}"):
+                pytest.fail("the arm must not run against a lingering server")
+
+    assert started == []
+    wait_for_port_release(config, timeout_seconds=0.2)
+
+
+def test_release_command_context_stops_the_server_when_startup_or_the_arm_fails(tmp_path, monkeypatch):
+    config = _release_config(tmp_path, port=_free_port())
+    events: list[tuple[str, ...]] = []
+
+    def start(config, python_executable, log_path, *, telemetry_jsonl=None):
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("server log", encoding="utf-8")
+        events.append(("start", log_path.name))
+        return object()
+
+    def never_ready(*args, **kwargs):
+        raise RuntimeError("server never became ready")
+
+    monkeypatch.setattr(vllm_smoke, "start_vllm_server", start)
+    monkeypatch.setattr(vllm_smoke, "terminate_process", lambda server: events.append(("stop",)))
+    monkeypatch.setattr(vllm_smoke, "wait_for_server", never_ready)
+    context = vllm_smoke.release_command_context(config)
+
+    with pytest.raises(RuntimeError, match="never became ready"):
+        with context(f"{ISOLATED_ARM_COMMAND_PREFIX}{BASELINE_PREFILL_ARM}"):
+            pytest.fail("the arm must not run when its server is not ready")
+    assert events == [("start", f"vllm-server-{BASELINE_PREFILL_ARM}.log"), ("stop",)]
+    copied_log = config.output_dir / f"vllm-server-{BASELINE_PREFILL_ARM}.log"
+    assert copied_log.read_text(encoding="utf-8") == "server log"
+
+    events.clear()
+    monkeypatch.setattr(vllm_smoke, "wait_for_server", lambda *args, **kwargs: None)
+    with pytest.raises(ValueError, match="arm failed"):
+        with context(f"{ISOLATED_ARM_COMMAND_PREFIX}{CACHE_REUSE_ARM}"):
+            raise ValueError("arm failed")
+    assert events == [("start", f"vllm-server-{CACHE_REUSE_ARM}.log"), ("stop",)]
+
+
+def test_release_benchmark_fails_the_run_when_an_arm_fails(tmp_path, monkeypatch):
+    config, servers, _budget_checks = _patch_release_runtime(monkeypatch, tmp_path)
+
+    def wait(server, log_path, config, **kwargs):
+        if CACHE_REUSE_ARM in log_path.name:
+            raise RuntimeError("cache arm server exited")
+
+    monkeypatch.setattr(vllm_smoke, "wait_for_server", wait)
+
+    with pytest.raises(
+        RuntimeError,
+        match=f"release benchmark command '{ISOLATED_ARM_COMMAND_PREFIX}{CACHE_REUSE_ARM}' failed: "
+        "RuntimeError: cache arm server exited",
+    ):
+        run_vllm_release_benchmark(config, _metadata())
+
+    plan_execution = json.loads(config.release_plan_execution_path.read_text(encoding="utf-8"))
+    assert plan_execution["ok"] is False
+    assert [name for name, _server in servers] == [
+        f"vllm-server-{BASELINE_PREFILL_ARM}.log",
+        f"vllm-server-{CACHE_REUSE_ARM}.log",
+    ]
+    assert not config.release_evidence_gate_path.exists()
 
 
 def test_parse_args_builds_release_benchmark_with_long_context(tmp_path):

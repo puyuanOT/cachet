@@ -13,6 +13,7 @@ from pathlib import Path
 import platform
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -428,6 +429,9 @@ class VLLMSmokeBenchmarkConfig:
     def release_server_log_path(self, arm_id: str) -> Path:
         return self.local_dir / f"vllm-server-{arm_id}.log"
 
+    def release_prompt_token_budget_path(self, dataset: str) -> Path:
+        return self.output_dir / f"prompt-token-budget-{dataset}.json"
+
 
 def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     """Create an isolated vLLM env, start Qwen3, and run the V1 smoke suite."""
@@ -650,23 +654,26 @@ def release_generator_env(config: VLLMSmokeBenchmarkConfig) -> dict[str, str]:
 
 
 def release_command_context(config: VLLMSmokeBenchmarkConfig) -> BenchmarkCommandContext:
-    """Serve each isolated arm from its own vLLM process for the length of its runner."""
-
-    budget_checked = False
+    """Check each dataset's prompt budget before its handoffs are generated, and serve
+    each isolated arm from its own vLLM process for the length of its runner."""
 
     @contextmanager
     def command_context(name: str) -> Iterator[None]:
-        nonlocal budget_checked
+        generated_dataset = _release_generate_command_dataset(name)
+        if generated_dataset is not None:
+            validate_prompt_token_budget(
+                config,
+                {generated_dataset: config.release_prepared_dir / f"{generated_dataset}.jsonl"},
+                record_path=config.release_prompt_token_budget_path(generated_dataset),
+            )
         if not name.startswith(ISOLATED_ARM_COMMAND_PREFIX):
             yield
             return
         arm_id = name.removeprefix(ISOLATED_ARM_COMMAND_PREFIX)
-        if not budget_checked:
-            validate_prompt_token_budget(config, _release_benchmark_dataset_paths(config))
-            budget_checked = True
         log_path = config.release_server_log_path(arm_id)
         telemetry_path = config.release_telemetry_path(arm_id)
         telemetry_path.unlink(missing_ok=True)
+        wait_for_port_release(config)
         server = start_vllm_server(config, config.venv_python, log_path, telemetry_jsonl=telemetry_path)
         try:
             wait_for_server(server, log_path, config, timeout_seconds=config.server_start_timeout_seconds)
@@ -706,8 +713,11 @@ def _release_runtime_version() -> str:
     return f"python-{platform.python_version()}"
 
 
-def _release_benchmark_dataset_paths(config: VLLMSmokeBenchmarkConfig) -> dict[str, Path]:
-    return {dataset: config.release_prepared_dir / f"{dataset}.handoffs.jsonl" for dataset in SMOKE_DATASETS}
+def _release_generate_command_dataset(name: str) -> str | None:
+    for dataset in SMOKE_DATASETS:
+        if name == f"generate-{dataset}-handoff-bundles":
+            return dataset
+    return None
 
 
 def _required_release(config: VLLMSmokeBenchmarkConfig) -> VLLMReleaseBenchmarkConfig:
@@ -879,7 +889,13 @@ def run(argv: list[str]) -> None:
     subprocess.run(argv, check=True)
 
 
-def validate_prompt_token_budget(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]) -> None:
+def validate_prompt_token_budget(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+    *,
+    record_path: Path | None = None,
+) -> None:
+    record_path = config.prompt_token_budget_path if record_path is None else record_path
     rows = build_prompt_token_budget_rows(config, dataset_paths)
     write_prompt_token_budget_jsonl(config.prompt_token_budget_input_path, rows)
     record = run_prompt_token_budget_probe(
@@ -891,11 +907,11 @@ def validate_prompt_token_budget(config: VLLMSmokeBenchmarkConfig, dataset_paths
         timeout_seconds=config.import_probe_timeout_seconds,
         env=server_env(config),
     )
-    write_json(config.prompt_token_budget_path, record)
+    write_json(record_path, record)
     if record.get("ok") is False:
         raise RuntimeError(
             f"Prompt token budget probe failed: {record.get('error') or record.get('error_type')}. "
-            f"See {config.prompt_token_budget_path}."
+            f"See {record_path}."
         )
     over_budget = record.get("over_budget")
     if isinstance(over_budget, list) and over_budget:
@@ -903,7 +919,7 @@ def validate_prompt_token_budget(config: VLLMSmokeBenchmarkConfig, dataset_paths
         raise ValueError(
             "Prepared vLLM benchmark prompts exceed the configured context budget; "
             f"{len(over_budget)} prompt(s) are over budget, first={first!r}. "
-            f"See {config.prompt_token_budget_path}."
+            f"See {record_path}."
         )
 
 
@@ -1818,7 +1834,32 @@ def start_vllm_server(
         env[DOCUMENT_KV_EVICT_PAGE_CACHE_ENV] = "1"
     print("+", " ".join(argv), flush=True)
     with log_path.open("w", encoding="utf-8") as log_handle:
-        return subprocess.Popen(argv, stdout=log_handle, stderr=subprocess.STDOUT, text=True, env=env)
+        return subprocess.Popen(
+            argv,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+            start_new_session=True,
+        )
+
+
+def wait_for_port_release(config: VLLMSmokeBenchmarkConfig, *, timeout_seconds: float = 120.0) -> None:
+    """Fail rather than let a lingering server answer the next server's readiness check."""
+
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            with socket.create_connection((config.client_host, config.server_port), timeout=1):
+                pass
+        except OSError:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"port {config.server_port} on {config.client_host} is still accepting connections "
+                f"{timeout_seconds:g}s after the previous server was stopped"
+            )
+        time.sleep(1)
 
 
 def wait_for_server(
@@ -1911,14 +1952,24 @@ def build_benchmark_runner_args(
 
 
 def terminate_process(process: subprocess.Popen) -> None:
-    if process.poll() is not None:
-        return
-    process.send_signal(signal.SIGTERM)
+    """Stop a server started by ``start_vllm_server`` and every worker in its session."""
+
+    if process.poll() is None:
+        _signal_process_group(process, signal.SIGTERM)
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            _signal_process_group(process, signal.SIGKILL)
+            process.wait(timeout=30)
+    _signal_process_group(process, signal.SIGKILL)
+
+
+def _signal_process_group(process: subprocess.Popen, sig: signal.Signals) -> None:
     try:
-        process.wait(timeout=30)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=30)
+        os.killpg(process.pid, sig)
+    except (ProcessLookupError, PermissionError):
+        if process.poll() is None:
+            process.send_signal(sig)
 
 
 def write_json(path: Path, payload: dict[str, object]) -> None:
