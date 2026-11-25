@@ -840,7 +840,13 @@ def _cache_state_attestations_from_files(paths: Sequence[str]) -> tuple[Any, ...
             ):
                 if not line.strip():
                     continue
-                record = json.loads(line)
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"cache-state telemetry {raw_path}:{line_number} is not valid JSON "
+                        f"(a truncated write?): {exc}"
+                    ) from exc
                 if not isinstance(record, Mapping):
                     raise ValueError(
                         f"cache-state telemetry {raw_path}:{line_number} must be an object"

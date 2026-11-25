@@ -388,6 +388,66 @@ def test_merge_isolated_cli_rejects_release_records_without_cold_attestations(re
     assert any("has no cache-state attestation" in issue for issue in gate["issues"])
 
 
+def _release_merge_arguments(config, tmp_path: Path, *, telemetry_path: Path) -> list[str]:
+    merge_argv = next(
+        command["argv"]
+        for command in json.loads(config.release_plan_path.read_text(encoding="utf-8"))["commands"]
+        if command["name"] == ISOLATED_ARM_MERGE_COMMAND
+    )
+    arguments = list(merge_argv[merge_argv.index("merge-isolated") + 1 :])
+    arguments[arguments.index("--cache-state-attestation-json") + 1] = str(telemetry_path)
+    arguments[arguments.index("--output-json") + 1] = str(tmp_path / "merged.json")
+    arguments[arguments.index("--evidence-gate-output-json") + 1] = str(tmp_path / "gate.json")
+    return arguments
+
+
+def _load_record_lines(config) -> list[dict]:
+    lines = config.release_telemetry_path(CACHE_REUSE_ARM).read_text(encoding="utf-8").splitlines()
+    records = [json.loads(line) for line in lines if line.strip()]
+    loads = [record for record in records if "cache_state_attestation" in record]
+    assert loads
+    return loads
+
+
+@pytest.mark.parametrize(
+    ("edit", "issue"),
+    (
+        ("duplicate", "has duplicate cache-state attestations"),
+        ("failed", "must attest exactly one successful load"),
+    ),
+)
+def test_merge_isolated_cli_gates_duplicate_and_failed_telemetry_loads(release_run, tmp_path, edit, issue):
+    config = release_run.config
+    loads = _load_record_lines(config)
+    if edit == "duplicate":
+        loads.append(loads[-1])
+    else:
+        loads[-1]["cache_state_attestation"]["successful_loads"] = 0
+    telemetry_path = tmp_path / "telemetry.jsonl"
+    telemetry_path.write_text("".join(json.dumps(record) + "\n" for record in loads), encoding="utf-8")
+
+    assert merge_isolated_main(_release_merge_arguments(config, tmp_path, telemetry_path=telemetry_path)) == 0
+
+    gate = json.loads((tmp_path / "gate.json").read_text(encoding="utf-8"))
+    assert gate["ok"] is False
+    assert any(issue in gate_issue for gate_issue in gate["issues"])
+
+
+def test_merge_isolated_cli_reports_a_truncated_telemetry_line(release_run, tmp_path, capsys):
+    config = release_run.config
+    loads = _load_record_lines(config)
+    telemetry_path = tmp_path / "telemetry.jsonl"
+    complete = "".join(json.dumps(record) + "\n" for record in loads)
+    telemetry_path.write_text(complete + json.dumps(loads[0])[:40], encoding="utf-8")
+
+    exit_code = merge_isolated_main(_release_merge_arguments(config, tmp_path, telemetry_path=telemetry_path))
+
+    assert exit_code == 1
+    error = json.loads(capsys.readouterr().out)
+    assert f"{telemetry_path}:{len(loads) + 1} is not valid JSON" in error["error"]
+    assert not (tmp_path / "merged.json").exists()
+
+
 def test_merge_isolated_cli_sanitizes_the_merged_record_on_request(release_run, tmp_path):
     output_dir = release_run.config.output_dir
     output_json = tmp_path / "sanitized.json"
