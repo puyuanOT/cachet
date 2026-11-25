@@ -278,7 +278,10 @@ ok. The release gate claims latency only. Answer quality is reported from the
 sealed [Quality v2 report](../../../benchmarks/appendix/vllm-0300-quality-v2/README.md),
 where Vanilla does not meet answer-quality non-inferiority on HotpotQA or
 MusiQue. `--max-model-len` defaults to 40960 so the 32K-token NIAH cell fits.
-Handoffs are stored twice (build shard and per-request payload), at about
+The vLLM provider copies each cache request's payload to the GPU in one piece,
+outside vLLM's memory budget (about 4.5 GiB for a 32K-token NIAH document), so
+24 GB GPUs (L4, A10G) need `--gpu-memory-utilization 0.70`; at 0.80 that copy
+runs out of GPU memory. Handoffs are stored twice (build shard and per-request payload), at about
 147 KB per token for Qwen3 4B in bfloat16. The first 54 rows of each staged
 dataset (six per NIAH cell) hold about 1.1 million document tokens, so
 `--release-limit-per-dataset 54` needs about 330 GB on `/local_disk0`.
