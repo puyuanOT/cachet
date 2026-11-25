@@ -279,8 +279,9 @@ sealed [Quality v2 report](../../../benchmarks/appendix/vllm-0300-quality-v2/REA
 where Vanilla does not meet answer-quality non-inferiority on HotpotQA or
 MusiQue. `--max-model-len` defaults to 40960 so the 32K-token NIAH cell fits.
 Handoffs are stored twice (build shard and per-request payload), at about
-147 KB per token for Qwen3 4B in bfloat16; the release-gate sizes (about 50 rows
-per dataset and 54 NIAH rows) need roughly 400 GB on `/local_disk0`.
+147 KB per token for Qwen3 4B in bfloat16. The first 54 rows of each staged
+dataset (six per NIAH cell) hold about 1.1 million document tokens, so
+`--release-limit-per-dataset 54` needs about 330 GB on `/local_disk0`.
 `--release-limit-per-dataset`, `--release-warmups`, `--release-model-revision`,
 and `--release-generator-factory` adjust the plan.
 
