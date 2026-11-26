@@ -34,6 +34,13 @@
   injection method is `runtime-prefix-cache-bind`. The previous defaults
   failed that preflight, so planned release-safe SGLang probes stopped before
   probing.
+- The prepared-dataset SGLang live V1 benchmark passes on baseline parity
+  instead of correct answers: every request succeeds, every cache-arm request
+  passes its cache-hit check, and each cache-arm output matches the baseline
+  output for the same example and repeat. Answer accuracy is still reported in
+  the report rows but no longer gated, and `sglang_live_v1_benchmark_issues`
+  checks parity from the recorded measurements. The synthetic NIAH live check
+  still requires the expected answer.
 - vLLM 0.30.0 (CUDA 12.9) serving profile, with the pinned hash-locked vLLM
   runtime lock shipped in the wheel, and `vllm_wheel_repack` for building the
   E5M2-patched vLLM wheel.

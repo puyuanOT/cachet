@@ -2670,7 +2670,7 @@ def test_run_sglang_live_benchmark_writes_repeat_measurements(
     assert written == record
 
 
-def _run_prepared_sglang_live_benchmark(monkeypatch, tmp_path, *, output_text):
+def _run_prepared_sglang_live_benchmark(monkeypatch, tmp_path, *, output_text, cache_output_text=None):
     dataset_specs = write_prepared_sglang_v1_datasets(tmp_path / "prepared")
     config = SGLangSmokeBenchmarkConfig(
         benchmark_id="sglang-prepared-v1",
@@ -2691,7 +2691,9 @@ def _run_prepared_sglang_live_benchmark(monkeypatch, tmp_path, *, output_text):
         return public_sglang_smoke.LiveServerCheckResult(
             request=request,
             generation=BenchmarkGeneration(
-                output_text=output_text(request.example.expected_answer or ""),
+                output_text=(
+                    cache_output_text if use_cache_arm and cache_output_text is not None else output_text
+                )(request.example.expected_answer or ""),
                 prompt_tokens=40,
                 completion_tokens=2,
                 ttft_seconds=0.1,
@@ -2752,7 +2754,7 @@ def test_prepared_sglang_live_benchmark_scores_measurements_with_quality_v2(
     ]
 
 
-def test_prepared_sglang_live_benchmark_rejects_answers_outside_the_final_answer_block(
+def test_prepared_sglang_live_benchmark_reports_wrong_answers_without_gating_on_them(
     monkeypatch, tmp_path
 ):
     record = _run_prepared_sglang_live_benchmark(
@@ -2761,14 +2763,38 @@ def test_prepared_sglang_live_benchmark_rejects_answers_outside_the_final_answer
         output_text=lambda answer: f"<final_answer>unknown</final_answer> {answer}",
     )
 
-    assert record["ok"] is False
+    assert record["ok"] is True
+    assert record["issues"] == []
     assert all(
         measurement["answer_found"] is False for measurement in record["measurements"]
     )
-    assert len(record["issues"]) == len(SUPPORTED_V1_DATASETS) * 2
-    assert all(
-        issue.endswith("did not return the expected answer") for issue in record["issues"]
+    assert all(row["answer_found_rate"] == 0.0 for row in record["report_rows"])
+    assert not [issue for issue in sglang_live_v1_benchmark_issues(record) if "must match" in issue]
+
+
+def test_prepared_sglang_live_benchmark_requires_cache_output_to_match_the_baseline(
+    monkeypatch, tmp_path
+):
+    record = _run_prepared_sglang_live_benchmark(
+        monkeypatch,
+        tmp_path,
+        output_text=lambda answer: f"<final_answer>{answer}</final_answer>",
+        cache_output_text=lambda answer: f"<final_answer>{answer}</final_answer> extra",
     )
+
+    assert record["ok"] is False
+    assert len(record["issues"]) == len(SUPPORTED_V1_DATASETS)
+    assert all(
+        issue.endswith("document_kv_cache repeat 1 output differs from baseline_prefill")
+        for issue in record["issues"]
+    )
+    assert all(measurement["answer_found"] is True for measurement in record["measurements"])
+
+    record["ok"] = True
+    record["issues"] = []
+    parity_issues = [issue for issue in sglang_live_v1_benchmark_issues(record) if "must match" in issue]
+    assert len(parity_issues) == len(SUPPORTED_V1_DATASETS)
+    assert all(issue.endswith("output must match baseline_prefill") for issue in parity_issues)
 
 
 @pytest.mark.parametrize(

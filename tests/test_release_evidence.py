@@ -212,6 +212,22 @@ def test_sglang_live_v1_benchmark_issues_require_cache_hit_measurement_bindings(
     assert any("cache_hit_validations[0] must match a measured cache-arm request" in issue for issue in issues)
 
 
+def test_sglang_live_v1_benchmark_issues_require_cache_output_to_match_the_baseline():
+    record = _sglang_live_v1_benchmark_record()
+    cache_measurement = next(
+        measurement for measurement in record["measurements"] if measurement["arm_id"] == "document_kv_cache"
+    )
+    cache_measurement["output_text"] += " extra"
+
+    issues = sglang_live_v1_benchmark_issues(record)
+
+    assert issues == (
+        f"SGLang live V1 benchmark {cache_measurement['dataset']}/{cache_measurement['example_id']} "
+        f"document_kv_cache repeat {cache_measurement['metadata']['repeat_index']} "
+        "output must match baseline_prefill",
+    )
+
+
 def test_evaluate_release_evidence_rejects_unsupported_g5_hardware_target():
     evidence = evaluate_release_evidence(
         _v1_record(ok=True, hardware_target="aws-g5"),

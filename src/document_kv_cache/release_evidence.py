@@ -789,6 +789,7 @@ def sglang_live_v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...
         _validate_v1_measurement_examples_have_consistent_expected_answers(measurements, issues)
         _validate_v1_measurement_examples_have_consistent_logical_prompt_tokens(measurements, issues)
         _validate_v1_measurements(measurements, issues)
+        _validate_sglang_live_v1_output_parity(measurements, issues)
     if measurements is not None and report_rows is not None:
         _validate_v1_report_aggregates_match_measurements(report_rows, measurements, issues)
     if report_rows is not None and comparisons is not None:
@@ -947,6 +948,35 @@ def _validate_sglang_live_v1_cache_hit_validations(
             issues.append(
                 "SGLang live V1 benchmark cache_hit_validations missing required "
                 f"dataset repeats: {', '.join(missing)}"
+            )
+
+
+def _validate_sglang_live_v1_output_parity(measurements: Sequence[Any], issues: list[str]) -> None:
+    outputs: dict[tuple[str, str, int, str], Any] = {}
+    for measurement in measurements:
+        if not isinstance(measurement, Mapping) or measurement.get("error") is not None:
+            continue
+        metadata = measurement.get("metadata")
+        repeat_index = _positive_int_metadata(metadata.get("repeat_index")) if isinstance(metadata, Mapping) else None
+        dataset = measurement.get("dataset")
+        example_id = measurement.get("example_id")
+        arm_id = measurement.get("arm_id")
+        if (
+            repeat_index is None
+            or not isinstance(dataset, str)
+            or not isinstance(example_id, str)
+            or arm_id not in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM)
+        ):
+            continue
+        outputs[(dataset, example_id, repeat_index, arm_id)] = measurement.get("output_text")
+    for (dataset, example_id, repeat_index, arm_id), output_text in sorted(outputs.items()):
+        if arm_id != CACHE_REUSE_ARM:
+            continue
+        baseline_key = (dataset, example_id, repeat_index, BASELINE_PREFILL_ARM)
+        if baseline_key in outputs and output_text != outputs[baseline_key]:
+            issues.append(
+                f"SGLang live V1 benchmark {dataset}/{example_id} {CACHE_REUSE_ARM} repeat {repeat_index} "
+                f"output must match {BASELINE_PREFILL_ARM}"
             )
 
 

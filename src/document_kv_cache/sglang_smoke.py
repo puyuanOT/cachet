@@ -2433,8 +2433,10 @@ def run_sglang_live_benchmark(
         )
         if measurement.error is not None:
             issues.append(f"{measurement_label} failed: {measurement.error}")
-        elif measurement.answer_found is not True:
+        elif not config.uses_prepared_datasets and measurement.answer_found is not True:
             issues.append(f"{measurement_label} did not return the expected answer")
+    if config.uses_prepared_datasets:
+        issues.extend(_live_benchmark_output_parity_issues(measurements))
 
     report_rows = summarize_measurements(measurements)
     comparisons = compare_to_baseline(report_rows)
@@ -2471,6 +2473,34 @@ def run_sglang_live_benchmark(
     }
     write_json(config.live_benchmark_output_path, record)
     return record
+
+
+def _live_benchmark_output_parity_issues(
+    measurements: Sequence[InferenceMeasurement],
+) -> list[str]:
+    """Prepared V1 suites gate on cache-arm parity; accuracy is reported, not gated."""
+
+    baseline_arm_id = baseline_prefill_arm().arm_id
+    cache_arm_id = document_kv_cache_arm().arm_id
+    baseline_outputs = {
+        (measurement.dataset, measurement.example_id, measurement.metadata.get("repeat_index")): (
+            measurement.output_text
+        )
+        for measurement in measurements
+        if measurement.arm_id == baseline_arm_id and measurement.error is None
+    }
+    issues = []
+    for measurement in measurements:
+        if measurement.arm_id != cache_arm_id or measurement.error is not None:
+            continue
+        repeat_index = measurement.metadata.get("repeat_index")
+        baseline_output = baseline_outputs.get((measurement.dataset, measurement.example_id, repeat_index))
+        if baseline_output is not None and measurement.output_text != baseline_output:
+            issues.append(
+                f"{measurement.dataset}/{measurement.example_id} {cache_arm_id} repeat {repeat_index} "
+                f"output differs from {baseline_arm_id}"
+            )
+    return issues
 
 
 def _sglang_live_benchmark_request_pairs(
