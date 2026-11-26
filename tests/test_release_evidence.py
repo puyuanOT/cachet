@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import json
 import os
@@ -226,6 +227,117 @@ def test_sglang_live_v1_benchmark_issues_require_cache_output_to_match_the_basel
         f"document_kv_cache repeat {cache_measurement['metadata']['repeat_index']} "
         "output must match baseline_prefill",
     )
+
+
+def _sglang_live_v1_measurement(record, dataset, arm_id, repeat):
+    return next(
+        measurement
+        for measurement in record["measurements"]
+        if measurement["dataset"] == dataset
+        and measurement["arm_id"] == arm_id
+        and measurement["metadata"]["repeat_index"] == str(repeat)
+    )
+
+
+def _blank_cache_error(record):
+    _sglang_live_v1_measurement(record, "hotpotqa", "document_kv_cache", 1)["error"] = ""
+
+
+def _drop_baseline_repeat_index(record):
+    _sglang_live_v1_measurement(record, "hotpotqa", "baseline_prefill", 1)["metadata"].pop("repeat_index")
+
+
+def _relabel_baseline_repeat(record):
+    _sglang_live_v1_measurement(record, "hotpotqa", "baseline_prefill", 1)["metadata"]["repeat_index"] = "2"
+
+
+def _duplicate_baseline_repeat(record):
+    _sglang_live_v1_measurement(record, "hotpotqa", "baseline_prefill", 1)["output_text"] += " diverged"
+    _sglang_live_v1_measurement(record, "hotpotqa", "baseline_prefill", 2)["metadata"]["repeat_index"] = "1"
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_issues"),
+    [
+        (
+            _blank_cache_error,
+            ["SGLang live V1 benchmark hotpotqa/hotpotqa-1 document_kv_cache repeat 1 output must match baseline_prefill"],
+        ),
+        (
+            _drop_baseline_repeat_index,
+            [
+                "SGLang live V1 benchmark measurements[4].metadata.repeat_index must be a positive integer",
+                "SGLang live V1 benchmark hotpotqa/hotpotqa-1 repeat 1 must have exactly one baseline_prefill "
+                "measurement, found 0",
+            ],
+        ),
+        (
+            _relabel_baseline_repeat,
+            [
+                "SGLang live V1 benchmark hotpotqa/hotpotqa-1 repeat 1 must have exactly one baseline_prefill "
+                "measurement, found 0",
+                "SGLang live V1 benchmark hotpotqa/hotpotqa-1 repeat 2 must have exactly one baseline_prefill "
+                "measurement, found 2",
+            ],
+        ),
+        (
+            _duplicate_baseline_repeat,
+            [
+                "SGLang live V1 benchmark hotpotqa/hotpotqa-1 repeat 1 must have exactly one baseline_prefill "
+                "measurement, found 2",
+                "SGLang live V1 benchmark hotpotqa/hotpotqa-1 repeat 2 must have exactly one baseline_prefill "
+                "measurement, found 0",
+            ],
+        ),
+    ],
+    ids=("blank-error", "missing-repeat-index", "relabelled-baseline", "duplicate-baseline"),
+)
+def test_sglang_live_v1_benchmark_issues_require_one_baseline_and_cache_output_per_repeat(mutate, expected_issues):
+    record = _sglang_live_v1_benchmark_record()
+    _sglang_live_v1_measurement(record, "hotpotqa", "document_kv_cache", 1)["output_text"] += " diverged"
+    mutate(record)
+
+    issues = sglang_live_v1_benchmark_issues(record)
+
+    for expected in expected_issues:
+        assert expected in issues
+
+
+def test_sglang_live_v1_benchmark_issues_require_a_cache_hit_validation_per_cache_request():
+    record = _sglang_live_v1_benchmark_record()
+    record["suite"]["examples"] += 1
+    for measurement in list(record["measurements"]):
+        if measurement["dataset"] == "hotpotqa":
+            record["measurements"].append(copy.deepcopy(measurement) | {"example_id": "hotpotqa-2"})
+    record["cache_hit_validations"].append(dict(record["cache_hit_validations"][0]))
+
+    issues = sglang_live_v1_benchmark_issues(record)
+
+    assert (
+        "SGLang live V1 benchmark cache_hit_validations missing cache-arm requests: "
+        "hotpotqa/hotpotqa-2 repeat 1, hotpotqa/hotpotqa-2 repeat 2"
+    ) in issues
+    duplicated = record["cache_hit_validations"][0]
+    assert (
+        "SGLang live V1 benchmark cache_hit_validations must validate each cache-arm request once: "
+        f"{duplicated['dataset']}/{duplicated['example_id']} repeat {duplicated['repeat_index']}"
+    ) in issues
+
+
+def test_sglang_live_v1_benchmark_issues_do_not_gate_on_answer_accuracy():
+    record = _sglang_live_v1_benchmark_record()
+    wrong_output = "<final_answer>Charles Babbage</final_answer>"
+    for measurement in record["measurements"]:
+        measurement["output_text"] = wrong_output
+        measurement["metadata"] |= final_answer_measurement_metadata(extract_first_final_answer(wrong_output))
+        measurement["exact_match"] = False
+        measurement["answer_found"] = False
+        measurement["quality_scores"] = dict.fromkeys(measurement["quality_scores"], 0.0)
+    for row in record["report_rows"]:
+        row["exact_match_rate"] = 0.0
+        row["answer_found_rate"] = 0.0
+
+    assert sglang_live_v1_benchmark_issues(record) == ()
 
 
 def test_evaluate_release_evidence_rejects_unsupported_g5_hardware_target():
