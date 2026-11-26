@@ -3148,8 +3148,8 @@ def _probe_kv_caches(layout: object, *, block_count: int) -> dict[str, object]:
 
 
 def _probe_kv_cache_shape(layout: object, *, block_count: int) -> tuple[int, ...]:
-    if getattr(layout, "shares_kv_storage", False):
-        raise ValueError("vLLM 0.30.0 Triton document KV injection does not support shared KV storage")
+    # Shared and separate K/V layouts serialize the same [token, layer, K/V,
+    # kv_head, head_dim] payload, so both scatter into the Triton packed cache.
     block_size = _positive_int(
         getattr(layout, "block_size", None),
         field_name="block_size",
