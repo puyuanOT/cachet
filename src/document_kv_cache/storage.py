@@ -146,7 +146,7 @@ def local_path(uri: str, *, root: str | Path | None = None) -> Path:
     if uri.startswith("file:"):
         return _file_uri_path(uri[len("file:") :], root=root)
     if uri.startswith("dbfs:/"):
-        relative_path = uri[len("dbfs:/") :]
+        relative_path = uri[len("dbfs:/") :].lstrip("/")
         if relative_path == "Volumes" or relative_path.startswith("Volumes/"):
             # UC Volumes use the /Volumes POSIX mount even in dbfs: URI form.
             return _validate_absolute_uc_path(

@@ -258,9 +258,10 @@ def test_local_path_resolves_file_and_dbfs_uri_forms(tmp_path):
 
 
 @pytest.mark.parametrize("prefix", ("", "disk:", "disk:disk:"))
+@pytest.mark.parametrize("scheme", ("dbfs:/", "dbfs:///"))
 @pytest.mark.parametrize("suffix", ("", "/nested/shard.kvpack"))
-def test_local_path_resolves_dbfs_volume_uri_to_uc_mount(tmp_path, prefix, suffix):
-    uri = f"{prefix}dbfs:/Volumes/catalog/schema/volume{suffix}"
+def test_local_path_resolves_dbfs_volume_uri_to_uc_mount(tmp_path, prefix, scheme, suffix):
+    uri = f"{prefix}{scheme}Volumes/catalog/schema/volume{suffix}"
 
     assert local_path(uri, root=tmp_path).as_posix() == f"/Volumes/catalog/schema/volume{suffix}"
 

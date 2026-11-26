@@ -273,7 +273,10 @@ def patched_vllm_wheel_install_spec() -> str:
 
     uri = raw_uri.strip()
     if uri.startswith("dbfs:/"):
-        uri = local_path(uri).resolve().as_uri()
+        try:
+            uri = local_path(uri).resolve().as_uri()
+        except ValueError as exc:
+            raise ValueError(f"{VLLM_PATCHED_WHEEL_URI_ENV} must be a valid dbfs:/ URI: {exc}") from exc
     elif uri.startswith("/"):
         uri = Path(uri).resolve().as_uri()
     parsed = urllib.parse.urlsplit(uri)

@@ -43,6 +43,10 @@
   measurements and now requires exactly one baseline and one cache measurement
   per example repeat and exactly one cache-hit validation per cache-arm
   request. The synthetic NIAH live check still requires the expected answer.
+- `storage.local_path` maps `dbfs:///Volumes/...` to the `/Volumes` mount, as
+  it already did for `dbfs:/Volumes/...`, and the patched vLLM wheel URI
+  (`DOCUMENT_KV_VLLM_PATCHED_WHEEL_URI`) now resolves `dbfs:` URIs the same
+  way instead of under `/dbfs`, where Unity Catalog clusters have no Volumes.
 - vLLM 0.30.0 (CUDA 12.9) serving profile, with the pinned hash-locked vLLM
   runtime lock shipped in the wheel, and `vllm_wheel_repack` for building the
   E5M2-patched vLLM wheel.
