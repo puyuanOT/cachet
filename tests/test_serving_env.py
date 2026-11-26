@@ -74,6 +74,26 @@ from document_kv_cache.serving_env import (
 )
 
 
+@pytest.mark.parametrize(
+    ("raw_uri", "expected_path"),
+    [
+        ("dbfs:/Volumes/catalog/schema/volume/wheels", "/Volumes/catalog/schema/volume/wheels"),
+        ("/Volumes/catalog/schema/volume/wheels", "/Volumes/catalog/schema/volume/wheels"),
+        ("dbfs:/FileStore/wheels", "/dbfs/FileStore/wheels"),
+    ],
+    ids=("dbfs-uc-volume", "uc-volume-path", "dbfs-root"),
+)
+def test_patched_vllm_wheel_install_spec_uses_the_cluster_mount_for_the_uri(monkeypatch, raw_uri, expected_path):
+    digest = "c" * 64
+    wheel_name = f"vllm-{VLLM_PACKAGE_VERSION}-1cachete5m2{digest[:16]}-cp38-abi3-manylinux_2_28_x86_64.whl"
+    monkeypatch.setenv(public_serving_env.VLLM_PATCHED_WHEEL_URI_ENV, f"{raw_uri}/{wheel_name}")
+    monkeypatch.setenv(public_serving_env.VLLM_PATCHED_WHEEL_SHA256_ENV, digest)
+
+    spec = public_serving_env.patched_vllm_wheel_install_spec()
+
+    assert spec == f"vllm @ {Path(expected_path, wheel_name).as_uri()}#sha256={digest}"
+
+
 def test_vllm_runtime_lock_is_packaged_hashed_and_excludes_vllm(monkeypatch):
     lock_path = vllm_runtime_lock_path()
     lock_bytes = lock_path.read_bytes()

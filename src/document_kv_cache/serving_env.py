@@ -15,6 +15,7 @@ from typing import Any
 import urllib.parse
 
 from document_kv_cache.engine_adapters import ServingBackend
+from document_kv_cache.storage import local_path
 
 SERVING_ENVIRONMENT_PROFILES_RECORD_TYPE = "document_kv.serving_environment_profiles.v1"
 
@@ -272,7 +273,7 @@ def patched_vllm_wheel_install_spec() -> str:
 
     uri = raw_uri.strip()
     if uri.startswith("dbfs:/"):
-        uri = Path("/dbfs", uri.removeprefix("dbfs:/").lstrip("/")).resolve().as_uri()
+        uri = local_path(uri).resolve().as_uri()
     elif uri.startswith("/"):
         uri = Path(uri).resolve().as_uri()
     parsed = urllib.parse.urlsplit(uri)
