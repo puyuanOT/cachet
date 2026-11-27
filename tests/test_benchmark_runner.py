@@ -25,6 +25,7 @@ from document_kv_cache.benchmark_runner import (
     default_benchmark_arms,
     load_benchmark_jsonl,
     load_v1_jsonl_suite,
+    main as benchmark_runner_main,
     merge_isolated_benchmark_run_records,
     parse_benchmark_arm_specs,
     run_benchmark_suite,
@@ -708,6 +709,15 @@ def test_merge_independent_one_arm_records_rebuilds_union_comparison():
     assert "TOP_SECRET_OUTPUT" not in serialized
     assert "Ada Lovelace" not in serialized
 
+    unsanitized_request = merge_isolated_benchmark_run_records(
+        records,
+        reference_arm_id="baseline",
+        policy="canary",
+        sanitize_evidence=False,
+    )
+    assert unsanitized_request["evidence_sanitized"] is True
+    assert "TOP_SECRET_OUTPUT" not in json.dumps(unsanitized_request)
+
     duplicate_execution = json.loads(json.dumps(records))
     duplicate_execution[1]["experiment_manifest"]["environment"]["runtime_id"] = (
         duplicate_execution[0]["experiment_manifest"]["environment"]["runtime_id"]
@@ -1334,7 +1344,7 @@ def test_methods_same_setting_rejects_actual_environment_drift() -> None:
         )
 
 
-def test_isolated_setting_merge_preserves_each_actual_hardware_environment() -> None:
+def test_isolated_setting_merge_preserves_each_actual_hardware_environment(tmp_path) -> None:
     records = []
     values = (("g5", "g5.8xlarge"), ("g6", "g6.8xlarge"))
     for index, (arm_id, hardware_target) in enumerate(values, start=1):
@@ -1389,6 +1399,34 @@ def test_isolated_setting_merge_preserves_each_actual_hardware_environment() -> 
         "varies_by_arm"
     )
     assert merged["suite"]["hardware_target"] == "varies_by_arm"
+
+    record_args = []
+    for index, record in enumerate(records):
+        path = tmp_path / f"arm-{index}.json"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        record_args.extend(["--record-json", str(path)])
+    output_json = tmp_path / "merged.json"
+    exit_code = benchmark_runner_main(
+        [
+            "merge-isolated",
+            *record_args,
+            "--reference-arm-id",
+            "g5",
+            "--comparison-mode",
+            "single_method_setting_variation",
+            "--varied-setting",
+            "hardware_target",
+            "--evidence-policy",
+            "canary",
+            "--output-json",
+            str(output_json),
+        ]
+    )
+    assert exit_code == 0
+    cli_merged = json.loads(output_json.read_text(encoding="utf-8"))
+    assert cli_merged["experiment_manifest"]["comparison"] == merged["experiment_manifest"]["comparison"]
+    assert cli_merged["experiment_manifest"]["comparison"]["varied_setting"] == "hardware_target"
+    assert cli_merged["suite"]["hardware_target"] == "varies_by_arm"
 
 
 def test_isolated_setting_merge_rejects_method_contract_drift() -> None:

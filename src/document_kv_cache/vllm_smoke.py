@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import argparse
 import gc
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -18,11 +21,27 @@ from types import SimpleNamespace
 from typing import Any
 import urllib.error
 import urllib.request
+import uuid
 
+from document_kv_cache._hardware_targets import validate_gpu_fingerprint_for_hardware_target
 from document_kv_cache.benchmark_handoffs import (
     enrich_benchmark_jsonl_with_handoffs,
     generate_benchmark_handoff_bundles,
     load_benchmark_kv_chunk_generator,
+)
+from document_kv_cache.benchmark_plan import (
+    ISOLATED_ARM_COMMAND_PREFIX,
+    BenchmarkDatasetPath,
+    BenchmarkPlanConfig,
+    build_v1_benchmark_plan,
+    write_benchmark_job_plan_json,
+)
+from document_kv_cache.benchmark_plan_executor import (
+    BenchmarkCommandContext,
+    BenchmarkCommandResult,
+    benchmark_plan_source_payload_to_record,
+    execute_benchmark_job_plan,
+    write_benchmark_command_results_json,
 )
 from document_kv_cache.benchmark_runner import load_v1_jsonl_suite
 from document_kv_cache.benchmarks import (
@@ -46,9 +65,15 @@ from document_kv_cache.engine_adapters import (
     validate_engine_adapter_request_record,
 )
 from document_kv_cache.engine_probe import _validate_local_payload_uri
+from document_kv_cache.engine_protocol import kv_payload_axis_order_from_value
 from document_kv_cache.artifact_identity import method_config_digest as compute_method_config_digest
-from document_kv_cache.model_profiles import layout_for_model
-from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
+from document_kv_cache.model_profiles import (
+    QWEN3_4B_INSTRUCT_HF_MODEL_ID,
+    QWEN3_4B_INSTRUCT_HF_REVISION,
+    QWEN3_4B_ROPE_ROTARY_DIM,
+    QWEN3_4B_ROPE_THETA,
+    layout_for_model,
+)
 from document_kv_cache.quality_v2 import QUALITY_V2_MAX_TOKENS
 from document_kv_cache.storage import local_path
 from document_kv_cache.serving_env import (
@@ -84,6 +109,23 @@ SMOKE_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 DEFAULT_LOCAL_ROOT = Path("/local_disk0")
 DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
 VLLM_USE_FLASHINFER_SAMPLER_ENV = "VLLM_USE_FLASHINFER_SAMPLER"
+DOCUMENT_KV_EVICT_PAGE_CACHE_ENV = "DOCUMENT_KV_EVICT_PAGE_CACHE"
+DEFAULT_MAX_MODEL_LEN = 4096
+RELEASE_MAX_MODEL_LEN = 40960
+DEFAULT_GPU_MEMORY_UTILIZATION = 0.85
+# The provider stages each request's payload on the GPU outside vLLM's budget
+# (about 4.5 GiB for a 32K-token NIAH document), which 0.80 leaves no room for
+# on 24 GB GPUs.
+RELEASE_GPU_MEMORY_UTILIZATION = 0.70
+# Clears the 50-row release gate per dataset and covers NIAH's nine cells evenly;
+# full datasets would not fit their handoffs on local disk.
+RELEASE_LIMIT_PER_DATASET = 54
+RELEASE_GENERATOR_FACTORY = (
+    "document_kv_cache.transformers_generator:build_pre_rope_transformers_kv_chunk_generator"
+)
+RELEASE_CACHE_METHOD = "vanilla_prefill"
+RELEASE_HANDOFF_DTYPE = "bfloat16"
+RELEASE_MEASUREMENT_SCOPES = ("latency",)
 
 __all__ = [
     "VLLM_VERSION",
@@ -97,9 +139,21 @@ __all__ = [
     "SERVED_MODEL_NAME",
     "SMOKE_DATASETS",
     "DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV",
+    "DEFAULT_MAX_MODEL_LEN",
+    "RELEASE_MAX_MODEL_LEN",
+    "DEFAULT_GPU_MEMORY_UTILIZATION",
+    "RELEASE_GPU_MEMORY_UTILIZATION",
+    "RELEASE_LIMIT_PER_DATASET",
+    "RELEASE_GENERATOR_FACTORY",
     "VLLMSmokeBenchmarkConfig",
     "VLLMPreparedHandoffGenerationConfig",
+    "VLLMReleaseBenchmarkConfig",
     "run_vllm_smoke_benchmark",
+    "run_vllm_release_benchmark",
+    "build_release_benchmark_plan_config",
+    "release_command_context",
+    "release_generator_env",
+    "gpu_hardware_fingerprint",
     "build_metadata",
     "build_vllm_native_provider_probe_record",
     "cuda_wheel_env_paths",
@@ -167,6 +221,69 @@ class VLLMPreparedHandoffGenerationConfig:
         }
 
 
+def resolve_release_sized_defaults(
+    max_model_len: int | None,
+    gpu_memory_utilization: float | None,
+    *,
+    release: bool,
+) -> tuple[int, float]:
+    """Fill unset vLLM sizing with the release values or the smoke defaults, then validate."""
+
+    if max_model_len is None:
+        max_model_len = RELEASE_MAX_MODEL_LEN if release else DEFAULT_MAX_MODEL_LEN
+    if gpu_memory_utilization is None:
+        gpu_memory_utilization = RELEASE_GPU_MEMORY_UTILIZATION if release else DEFAULT_GPU_MEMORY_UTILIZATION
+    if max_model_len <= 0:
+        raise ValueError("max_model_len must be positive")
+    if not 0 < gpu_memory_utilization <= 1:
+        raise ValueError("gpu_memory_utilization must be in (0, 1]")
+    return max_model_len, gpu_memory_utilization
+
+
+@dataclass(frozen=True, slots=True)
+class VLLMReleaseBenchmarkConfig:
+    """Publication-policy release benchmark driven by a V1 benchmark plan.
+
+    The plan prepares raw datasets, generates and attaches handoffs, runs each
+    arm against its own vLLM server, then merges and gates the comparison on
+    cold-read latency.
+    """
+
+    raw_dataset_specs: tuple[str, ...]
+    generator_factory: str = RELEASE_GENERATOR_FACTORY
+    cache_method: str = RELEASE_CACHE_METHOD
+    model_revision: str = QWEN3_4B_INSTRUCT_HF_REVISION
+    limit_per_dataset: int = RELEASE_LIMIT_PER_DATASET
+    warmups: int = 1
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "raw_dataset_specs", tuple(self.raw_dataset_specs))
+        parse_dataset_specs(self.raw_dataset_specs)
+        for field_name in ("generator_factory", "cache_method", "model_revision"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"release {field_name} must be non-empty")
+        if self.model_revision == "unresolved":
+            raise ValueError("release model_revision must be a resolved revision")
+        if type(self.limit_per_dataset) is not int or self.limit_per_dataset <= 0:
+            raise ValueError("release limit_per_dataset must be a positive integer")
+        if type(self.warmups) is not int or self.warmups < 0:
+            raise ValueError("release warmups must be a non-negative integer")
+
+    def to_metadata(self) -> dict[str, object]:
+        return {
+            "raw_dataset_specs": list(self.raw_dataset_specs),
+            "generator_factory": self.generator_factory,
+            "cache_method": self.cache_method,
+            "model_revision": self.model_revision,
+            "limit_per_dataset": self.limit_per_dataset,
+            "warmups": self.warmups,
+            "evidence_policy": "publication",
+            "measurement_scopes": list(RELEASE_MEASUREMENT_SCOPES),
+            "cache_state": "cold",
+        }
+
+
 @dataclass(frozen=True)
 class VLLMSmokeBenchmarkConfig:
     """Runtime configuration for a one-node Databricks vLLM smoke run."""
@@ -181,15 +298,16 @@ class VLLMSmokeBenchmarkConfig:
     server_host: str = SERVER_HOST
     server_port: int = SERVER_PORT
     client_host: str = SERVER_HOST
-    max_model_len: int = 4096
+    max_model_len: int | None = None
     max_num_seqs: int = 2
-    gpu_memory_utilization: float = 0.85
+    gpu_memory_utilization: float | None = None
     benchmark_repeats: int = 1
     hardware_target: str = DEFAULT_HARDWARE_TARGET
     dataset_specs: tuple[str, ...] = ()
     package_install_spec: str | None = None
     handoff_generation: VLLMPreparedHandoffGenerationConfig | None = None
     payload_cache_max_bytes: int = 0
+    release_benchmark: VLLMReleaseBenchmarkConfig | None = None
 
     def __post_init__(self) -> None:
         if not self.benchmark_id:
@@ -212,12 +330,15 @@ class VLLMSmokeBenchmarkConfig:
             raise ValueError("server_port must be between 1 and 65535")
         if not self.client_host:
             raise ValueError("client_host must be non-empty")
-        if self.max_model_len <= 0:
-            raise ValueError("max_model_len must be positive")
+        max_model_len, gpu_memory_utilization = resolve_release_sized_defaults(
+            self.max_model_len,
+            self.gpu_memory_utilization,
+            release=self.release_benchmark is not None,
+        )
+        object.__setattr__(self, "max_model_len", max_model_len)
+        object.__setattr__(self, "gpu_memory_utilization", gpu_memory_utilization)
         if self.max_num_seqs <= 0:
             raise ValueError("max_num_seqs must be positive")
-        if not 0 < self.gpu_memory_utilization <= 1:
-            raise ValueError("gpu_memory_utilization must be in (0, 1]")
         if isinstance(self.benchmark_repeats, bool) or not isinstance(self.benchmark_repeats, int):
             raise TypeError("benchmark_repeats must be a positive integer")
         if self.benchmark_repeats <= 0:
@@ -239,6 +360,19 @@ class VLLMSmokeBenchmarkConfig:
                 raise TypeError("handoff_generation must be a VLLMPreparedHandoffGenerationConfig")
             if not self.dataset_specs:
                 raise ValueError("benchmark_handoff_generator_factory requires prepared dataset specs")
+        if self.release_benchmark is not None:
+            if not isinstance(self.release_benchmark, VLLMReleaseBenchmarkConfig):
+                raise TypeError("release_benchmark must be a VLLMReleaseBenchmarkConfig")
+            if self.dataset_specs or self.handoff_generation is not None:
+                raise ValueError(
+                    "release benchmarks prepare raw datasets and generate handoffs through "
+                    "their plan; do not combine them with prepared dataset specs"
+                )
+            if self.payload_cache_max_bytes:
+                raise ValueError(
+                    "release benchmarks attest cold payload reads and require the "
+                    "provider payload cache to be disabled"
+                )
 
     @property
     def local_dir(self) -> Path:
@@ -300,10 +434,42 @@ class VLLMSmokeBenchmarkConfig:
     def uses_prepared_datasets(self) -> bool:
         return bool(self.dataset_specs)
 
+    @property
+    def release_plan_path(self) -> Path:
+        return self.output_dir / "release-benchmark-plan.json"
+
+    @property
+    def release_plan_execution_path(self) -> Path:
+        return self.output_dir / "release-plan-execution.json"
+
+    @property
+    def release_evidence_gate_path(self) -> Path:
+        return self.output_dir / "v1-evidence-gate.json"
+
+    @property
+    def release_prepared_dir(self) -> Path:
+        return self.local_dir / "prepared"
+
+    @property
+    def release_handoff_dir(self) -> Path:
+        # Local disk keeps cache-arm payload reads honest once the page cache is evicted.
+        return self.local_dir / "handoffs"
+
+    def release_telemetry_path(self, arm_id: str) -> Path:
+        return self.local_dir / f"vllm-telemetry-{arm_id}.jsonl"
+
+    def release_server_log_path(self, arm_id: str) -> Path:
+        return self.local_dir / f"vllm-server-{arm_id}.log"
+
+    def release_prompt_token_budget_path(self, dataset: str) -> Path:
+        return self.output_dir / f"prompt-token-budget-{dataset}.json"
+
 
 def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     """Create an isolated vLLM env, start Qwen3, and run the V1 smoke suite."""
 
+    if config.release_benchmark is not None:
+        validate_gpu_fingerprint_for_hardware_target(gpu_hardware_fingerprint(), config.hardware_target)
     config.output_dir.mkdir(parents=True, exist_ok=True)
     config.local_dir.mkdir(parents=True, exist_ok=True)
     os.environ["HF_HOME"] = str(config.hf_cache_dir)
@@ -324,6 +490,9 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
         timeout_seconds=config.import_probe_timeout_seconds,
         env=server_env(config),
     )
+    if config.release_benchmark is not None:
+        run_vllm_release_benchmark(config, metadata)
+        return
 
     dataset_paths = benchmark_dataset_paths(config)
     dataset_paths = prepare_generated_benchmark_handoffs(config, dataset_paths)
@@ -350,6 +519,249 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
 
 
+def run_vllm_release_benchmark(
+    config: VLLMSmokeBenchmarkConfig,
+    metadata: dict[str, object],
+) -> tuple[BenchmarkCommandResult, ...]:
+    """Execute the publication release benchmark plan in the installed vLLM env."""
+
+    release = _required_release(config)
+    hardware_fingerprint = gpu_hardware_fingerprint()
+    validate_gpu_fingerprint_for_hardware_target(hardware_fingerprint, config.hardware_target)
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    config.local_dir.mkdir(parents=True, exist_ok=True)
+    plan_config = build_release_benchmark_plan_config(
+        config,
+        engine_version=str(metadata["vllm_version_installed"]),
+        generator_version=str(metadata["transformers_version_installed"]),
+        package_revisions=(
+            f"cachet-kv={metadata['document_kv_cache_version_installed']}",
+            f"vllm={metadata['vllm_version_installed']}",
+            f"transformers={metadata['transformers_version_installed']}",
+            f"torch={metadata['torch_version_installed']}",
+        ),
+        hardware_fingerprint=hardware_fingerprint,
+        runtime_id=f"{config.benchmark_id}:{uuid.uuid4().hex}",
+        runtime_version=_release_runtime_version(),
+        serving_platform="databricks" if os.environ.get("DATABRICKS_RUNTIME_VERSION") else "local",
+    )
+    write_benchmark_job_plan_json(build_v1_benchmark_plan(plan_config), config.release_plan_path)
+    payload = config.release_plan_path.read_bytes()
+    plan_source = benchmark_plan_source_payload_to_record(
+        str(config.release_plan_path),
+        config.release_plan_path,
+        payload,
+    )
+    metadata.update(
+        {
+            "release_benchmark": release.to_metadata(),
+            "release_plan_path": str(config.release_plan_path),
+            "release_plan_execution_path": str(config.release_plan_execution_path),
+            "release_benchmark_output_path": str(config.benchmark_output_path),
+            "release_evidence_gate_path": str(config.release_evidence_gate_path),
+        }
+    )
+    write_json(config.metadata_path, metadata)
+    results = execute_benchmark_job_plan(
+        json.loads(payload.decode("utf-8")),
+        command_context=release_command_context(config),
+        env={**server_env(config), **release_generator_env(config)},
+    )
+    write_benchmark_command_results_json(
+        results,
+        config.release_plan_execution_path,
+        plan_source=plan_source,
+    )
+    failed = next((result for result in results if not result.ok), None)
+    if failed is not None:
+        detail = failed.error or f"return code {failed.returncode}"
+        raise RuntimeError(
+            f"release benchmark command {failed.name!r} failed: {detail}; "
+            f"see {config.release_plan_execution_path}"
+        )
+    gate = json.loads(config.release_evidence_gate_path.read_text(encoding="utf-8"))
+    if gate.get("ok") is not True:
+        issues = gate.get("issues") or []
+        raise RuntimeError(
+            f"release benchmark evidence gate failed with {len(issues)} issue(s): "
+            f"{'; '.join(str(issue) for issue in issues[:5])}; see {config.release_evidence_gate_path}"
+        )
+    return results
+
+
+def build_release_benchmark_plan_config(
+    config: VLLMSmokeBenchmarkConfig,
+    *,
+    engine_version: str,
+    generator_version: str,
+    package_revisions: tuple[str, ...],
+    hardware_fingerprint: str,
+    runtime_id: str,
+    runtime_version: str,
+    serving_platform: str,
+) -> BenchmarkPlanConfig:
+    """Return the V1 plan whose provenance matches the generated Vanilla artifacts."""
+
+    release = _required_release(config)
+    layout = layout_for_model(SERVED_MODEL_NAME, dtype=RELEASE_HANDOFF_DTYPE)
+    cache_arm = method_benchmark_arm(release.cache_method, arm_id=CACHE_REUSE_ARM)
+    raw_paths = parse_dataset_specs(release.raw_dataset_specs)
+    dataset_paths = tuple(
+        BenchmarkDatasetPath(
+            dataset=dataset,
+            raw_jsonl=str(raw_paths[dataset]),
+            prepared_jsonl=str(config.release_prepared_dir / f"{dataset}.jsonl"),
+            handoff_manifest_json=str(config.release_handoff_dir / f"{dataset}-manifest.json"),
+            handoff_jsonl=str(config.release_prepared_dir / f"{dataset}.handoffs.jsonl"),
+        )
+        for dataset in SMOKE_DATASETS
+    )
+    return BenchmarkPlanConfig(
+        suite_id=config.benchmark_id,
+        dataset_paths=dataset_paths,
+        base_url=config.server_base_url,
+        cache_base_url=config.server_base_url,
+        benchmark_output_json=str(config.benchmark_output_path),
+        model_id=SERVED_MODEL_NAME,
+        canonical_model_id=SERVED_MODEL_NAME,
+        hardware_target=config.hardware_target,
+        python_executable=str(config.venv_python),
+        limit_per_dataset=release.limit_per_dataset,
+        max_tokens=config.max_tokens,
+        repeats=config.benchmark_repeats,
+        warmups=release.warmups,
+        timeout_seconds=config.timeout_seconds,
+        server_usage=True,
+        prefix_cache_salt_mode=PREPARED_PREFIX_CACHE_SALT_MODE,
+        baseline_extra_body_json=json.dumps({"cache_salt": BASELINE_PREFIX_CACHE_SALT}, sort_keys=True),
+        cache_extra_body_json=json.dumps({"cache_salt": CACHE_PREFIX_CACHE_SALT}, sort_keys=True),
+        evidence_policy="publication",
+        evidence_gate_output_json=str(config.release_evidence_gate_path),
+        measurement_scopes=RELEASE_MEASUREMENT_SCOPES,
+        cache_state_attestation_jsons=(str(config.release_telemetry_path(CACHE_REUSE_ARM)),),
+        benchmark_arm_specs_json=tuple(
+            json.dumps(benchmark_arm_spec(arm), sort_keys=True)
+            for arm in (baseline_prefill_arm(), cache_arm)
+        ),
+        isolated_arm_jobs=True,
+        model_revision=release.model_revision,
+        tokenizer_id=HF_MODEL_ID,
+        tokenizer_revision=release.model_revision,
+        engine_id="vllm",
+        engine_version=engine_version,
+        package_revisions=package_revisions,
+        hardware_fingerprint=hardware_fingerprint,
+        runtime_id=runtime_id,
+        runtime_version=runtime_version,
+        storage_identity=f"local-disk:{config.local_root}",
+        cache_state="cold",
+        serving_platform=serving_platform,
+        model_dtype=RELEASE_HANDOFF_DTYPE,
+        runtime_kv_dtype=layout.dtype,
+        layout_version=layout.layout_version,
+        payload_axis_order=kv_payload_axis_order_from_value(layout.payload_axis_order).value,
+        block_size=layout.block_size,
+        key_position_encoding="pre_rope",
+        rope_theta=QWEN3_4B_ROPE_THETA,
+        rope_rotary_dim=QWEN3_4B_ROPE_ROTARY_DIM,
+        tensor_parallel_size=1,
+        pipeline_parallel_size=1,
+        benchmark_handoff_generator_factory=release.generator_factory,
+        benchmark_handoff_output_dir=str(config.release_handoff_dir),
+        benchmark_handoff_dtype=RELEASE_HANDOFF_DTYPE,
+        benchmark_handoff_cache_method=release.cache_method,
+        benchmark_handoff_segment_per_document=True,
+        benchmark_handoff_generator_version=generator_version,
+    )
+
+
+def release_generator_env(config: VLLMSmokeBenchmarkConfig) -> dict[str, str]:
+    """Pin the Transformers generator to the revision vLLM serves."""
+
+    release = _required_release(config)
+    return {
+        "CACHET_TRANSFORMERS_MODEL_ID": HF_MODEL_ID,
+        "CACHET_TRANSFORMERS_MODEL_REVISION": release.model_revision,
+        "CACHET_TRANSFORMERS_TOKENIZER_ID": HF_MODEL_ID,
+        "CACHET_TRANSFORMERS_TOKENIZER_REVISION": release.model_revision,
+        "CACHET_TRANSFORMERS_DEVICE": "cuda",
+        "CACHET_TRANSFORMERS_TORCH_DTYPE": RELEASE_HANDOFF_DTYPE,
+    }
+
+
+def release_command_context(config: VLLMSmokeBenchmarkConfig) -> BenchmarkCommandContext:
+    """Check each dataset's prompt budget before its handoffs are generated, and serve
+    each isolated arm from its own vLLM process for the length of its runner."""
+
+    @contextmanager
+    def command_context(name: str) -> Iterator[None]:
+        generated_dataset = _release_generate_command_dataset(name)
+        if generated_dataset is not None:
+            validate_prompt_token_budget(
+                config,
+                {generated_dataset: config.release_prepared_dir / f"{generated_dataset}.jsonl"},
+                record_path=config.release_prompt_token_budget_path(generated_dataset),
+            )
+        if not name.startswith(ISOLATED_ARM_COMMAND_PREFIX):
+            yield
+            return
+        arm_id = name.removeprefix(ISOLATED_ARM_COMMAND_PREFIX)
+        log_path = config.release_server_log_path(arm_id)
+        telemetry_path = config.release_telemetry_path(arm_id)
+        telemetry_path.unlink(missing_ok=True)
+        wait_for_port_release(config)
+        server = start_vllm_server(config, config.venv_python, log_path, telemetry_jsonl=telemetry_path)
+        try:
+            wait_for_server(server, log_path, config, timeout_seconds=config.server_start_timeout_seconds)
+            yield
+        finally:
+            terminate_process(server)
+            copy_file_if_exists(log_path, config.output_dir / log_path.name)
+            copy_file_if_exists(telemetry_path, config.output_dir / telemetry_path.name)
+
+    return command_context
+
+
+def gpu_hardware_fingerprint() -> str:
+    """Describe the visible NVIDIA GPUs for resolved benchmark provenance."""
+
+    completed = subprocess.run(
+        [
+            "nvidia-smi",
+            "--query-gpu=name,memory.total,driver_version",
+            "--format=csv,noheader",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    gpus = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    if not gpus:
+        raise RuntimeError("nvidia-smi reported no GPUs")
+    return "nvidia:" + ";".join(gpus)
+
+
+def _release_runtime_version() -> str:
+    databricks_runtime = os.environ.get("DATABRICKS_RUNTIME_VERSION")
+    if databricks_runtime:
+        return f"databricks-runtime-{databricks_runtime}"
+    return f"python-{platform.python_version()}"
+
+
+def _release_generate_command_dataset(name: str) -> str | None:
+    for dataset in SMOKE_DATASETS:
+        if name == f"generate-{dataset}-handoff-bundles":
+            return dataset
+    return None
+
+
+def _required_release(config: VLLMSmokeBenchmarkConfig) -> VLLMReleaseBenchmarkConfig:
+    if config.release_benchmark is None:
+        raise ValueError("vLLM smoke config does not define a release benchmark")
+    return config.release_benchmark
+
+
 def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
     return {
         "benchmark_id": config.benchmark_id,
@@ -362,7 +774,13 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "hf_home": str(config.hf_cache_dir),
         "vllm_python": str(config.venv_python),
         "dependency_constraints": dependency_constraints(),
-        "dataset_source": "prepared" if config.dataset_specs else "smoke",
+        "dataset_source": (
+            "release_plan"
+            if config.release_benchmark is not None
+            else "prepared"
+            if config.dataset_specs
+            else "smoke"
+        ),
         "dataset_specs": list(config.dataset_specs),
         "cache_runtime_prompt": False,
         "cache_prompt_text_mode": "logical",
@@ -372,13 +790,16 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
                 "cache_cache_salt": CACHE_PREFIX_CACHE_SALT,
                 "cache_salt_mode": PREPARED_PREFIX_CACHE_SALT_MODE,
             }
-            if config.uses_prepared_datasets
+            if config.uses_prepared_datasets or config.release_benchmark is not None
             else None
         ),
-        "requires_kv_transfer_params": config.uses_prepared_datasets,
+        "requires_kv_transfer_params": config.uses_prepared_datasets or config.release_benchmark is not None,
         "generates_prepared_handoffs": config.handoff_generation is not None,
         "benchmark_handoff_generation": (
             None if config.handoff_generation is None else config.handoff_generation.to_metadata()
+        ),
+        "release_benchmark": (
+            None if config.release_benchmark is None else config.release_benchmark.to_metadata()
         ),
         "max_model_len": config.max_model_len,
         "max_num_seqs": config.max_num_seqs,
@@ -504,7 +925,14 @@ def run(argv: list[str]) -> None:
     subprocess.run(argv, check=True)
 
 
-def validate_prompt_token_budget(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]) -> None:
+def validate_prompt_token_budget(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+    *,
+    record_path: Path | None = None,
+) -> None:
+    assert config.max_model_len is not None
+    record_path = config.prompt_token_budget_path if record_path is None else record_path
     rows = build_prompt_token_budget_rows(config, dataset_paths)
     write_prompt_token_budget_jsonl(config.prompt_token_budget_input_path, rows)
     record = run_prompt_token_budget_probe(
@@ -516,11 +944,11 @@ def validate_prompt_token_budget(config: VLLMSmokeBenchmarkConfig, dataset_paths
         timeout_seconds=config.import_probe_timeout_seconds,
         env=server_env(config),
     )
-    write_json(config.prompt_token_budget_path, record)
+    write_json(record_path, record)
     if record.get("ok") is False:
         raise RuntimeError(
             f"Prompt token budget probe failed: {record.get('error') or record.get('error_type')}. "
-            f"See {config.prompt_token_budget_path}."
+            f"See {record_path}."
         )
     over_budget = record.get("over_budget")
     if isinstance(over_budget, list) and over_budget:
@@ -528,7 +956,7 @@ def validate_prompt_token_budget(config: VLLMSmokeBenchmarkConfig, dataset_paths
         raise ValueError(
             "Prepared vLLM benchmark prompts exceed the configured context budget; "
             f"{len(over_budget)} prompt(s) are over budget, first={first!r}. "
-            f"See {config.prompt_token_budget_path}."
+            f"See {record_path}."
         )
 
 
@@ -1379,8 +1807,13 @@ def dataset_args(dataset_paths: dict[str, Path]) -> list[str]:
     return args
 
 
-def build_vllm_server_args(config: VLLMSmokeBenchmarkConfig, python_executable: Path) -> list[str]:
-    return [
+def build_vllm_server_args(
+    config: VLLMSmokeBenchmarkConfig,
+    python_executable: Path,
+    *,
+    telemetry_jsonl: Path | None = None,
+) -> list[str]:
+    args = [
         str(python_executable),
         "-u",
         "-m",
@@ -1404,24 +1837,70 @@ def build_vllm_server_args(config: VLLMSmokeBenchmarkConfig, python_executable: 
         "--kv-transfer-config",
         document_kv_transfer_config_json(
             payload_cache_max_bytes=config.payload_cache_max_bytes or None,
+            telemetry_jsonl=None if telemetry_jsonl is None else str(telemetry_jsonl),
         ),
         "--trust-remote-code",
         "--no-enable-log-requests",
     ]
+    if config.release_benchmark is not None:
+        layout = layout_for_model(SERVED_MODEL_NAME, dtype=RELEASE_HANDOFF_DTYPE)
+        args.extend(
+            [
+                "--revision",
+                config.release_benchmark.model_revision,
+                "--tokenizer-revision",
+                config.release_benchmark.model_revision,
+                "--block-size",
+                str(layout.block_size),
+            ]
+        )
+    return args
 
 
 def start_vllm_server(
-    config: VLLMSmokeBenchmarkConfig, python_executable: Path, log_path: Path
-) -> subprocess.Popen:
+    config: VLLMSmokeBenchmarkConfig,
+    python_executable: Path,
+    log_path: Path,
+    *,
+    telemetry_jsonl: Path | None = None,
+) -> subprocess.Popen[str]:
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    argv = build_vllm_server_args(config, python_executable)
+    argv = build_vllm_server_args(config, python_executable, telemetry_jsonl=telemetry_jsonl)
+    env = server_env(config)
+    if config.release_benchmark is not None:
+        env[DOCUMENT_KV_EVICT_PAGE_CACHE_ENV] = "1"
     print("+", " ".join(argv), flush=True)
     with log_path.open("w", encoding="utf-8") as log_handle:
-        return subprocess.Popen(argv, stdout=log_handle, stderr=subprocess.STDOUT, text=True, env=server_env(config))
+        return subprocess.Popen(
+            argv,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+            start_new_session=True,
+        )
+
+
+def wait_for_port_release(config: VLLMSmokeBenchmarkConfig, *, timeout_seconds: float = 120.0) -> None:
+    """Fail rather than let a lingering server answer the next server's readiness check."""
+
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            with socket.create_connection((config.client_host, config.server_port), timeout=1):
+                pass
+        except OSError:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"port {config.server_port} on {config.client_host} is still accepting connections "
+                f"{timeout_seconds:g}s after the previous server was stopped"
+            )
+        time.sleep(1)
 
 
 def wait_for_server(
-    server: subprocess.Popen,
+    server: subprocess.Popen[str],
     log_path: Path,
     config: VLLMSmokeBenchmarkConfig,
     *,
@@ -1509,15 +1988,25 @@ def build_benchmark_runner_args(
     return args
 
 
-def terminate_process(process: subprocess.Popen) -> None:
-    if process.poll() is not None:
-        return
-    process.send_signal(signal.SIGTERM)
+def terminate_process(process: subprocess.Popen[str]) -> None:
+    """Stop a server started by ``start_vllm_server`` and every worker in its session."""
+
+    if process.poll() is None:
+        _signal_process_group(process, signal.SIGTERM)
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            _signal_process_group(process, signal.SIGKILL)
+            process.wait(timeout=30)
+    _signal_process_group(process, signal.SIGKILL)
+
+
+def _signal_process_group(process: subprocess.Popen[str], sig: signal.Signals) -> None:
     try:
-        process.wait(timeout=30)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=30)
+        os.killpg(process.pid, sig)
+    except (ProcessLookupError, PermissionError):
+        if process.poll() is None:
+            process.send_signal(sig)
 
 
 def write_json(path: Path, payload: dict[str, object]) -> None:
@@ -1628,9 +2117,23 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     parser.add_argument("--server-host", default=SERVER_HOST)
     parser.add_argument("--server-port", type=int, default=SERVER_PORT)
     parser.add_argument("--client-host", default=SERVER_HOST)
-    parser.add_argument("--max-model-len", type=int, default=4096)
+    parser.add_argument(
+        "--max-model-len",
+        type=int,
+        help=(
+            f"vLLM context length. Defaults to {DEFAULT_MAX_MODEL_LEN}, or "
+            f"{RELEASE_MAX_MODEL_LEN} for release benchmarks."
+        ),
+    )
     parser.add_argument("--max-num-seqs", type=int, default=2)
-    parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
+    parser.add_argument(
+        "--gpu-memory-utilization",
+        type=float,
+        help=(
+            f"Defaults to {DEFAULT_GPU_MEMORY_UTILIZATION}, or {RELEASE_GPU_MEMORY_UTILIZATION} for release "
+            "benchmarks, which stage long cache payloads on the GPU outside vLLM's budget."
+        ),
+    )
     parser.add_argument(
         "--hardware-target",
         choices=SUPPORTED_V1_HARDWARE_TARGETS,
@@ -1689,9 +2192,31 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
             "method's complete artifact contract."
         ),
     )
+    parser.add_argument(
+        "--release-raw-dataset",
+        action="append",
+        default=None,
+        metavar="DATASET=JSONL_PATH",
+        help=(
+            "Run the publication release benchmark from this raw V1 dataset. Repeat for all four "
+            "V1 datasets. The plan prepares rows, generates Vanilla handoffs on local disk, runs "
+            "each arm against its own vLLM server with cold payload reads, then merges and gates "
+            "the comparison on latency."
+        ),
+    )
+    parser.add_argument(
+        "--release-limit-per-dataset",
+        type=int,
+        default=RELEASE_LIMIT_PER_DATASET,
+        help=f"Rows prepared per raw dataset (default {RELEASE_LIMIT_PER_DATASET}).",
+    )
+    parser.add_argument("--release-warmups", type=int, default=1)
+    parser.add_argument("--release-model-revision", default=QWEN3_4B_INSTRUCT_HF_REVISION)
+    parser.add_argument("--release-generator-factory", default=RELEASE_GENERATOR_FACTORY)
     args = parser.parse_args(argv)
     output_dir = Path(_cluster_file_path(args.output_dir))
     handoff_generation = _handoff_generation_config_from_args(args, output_dir=output_dir)
+    release_benchmark = _release_benchmark_config_from_args(args)
     return VLLMSmokeBenchmarkConfig(
         benchmark_id=args.benchmark_id,
         output_dir=output_dir,
@@ -1712,6 +2237,19 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         dataset_specs=tuple(args.dataset or ()),
         package_install_spec=args.package_install_spec,
         handoff_generation=handoff_generation,
+        release_benchmark=release_benchmark,
+    )
+
+
+def _release_benchmark_config_from_args(args: argparse.Namespace) -> VLLMReleaseBenchmarkConfig | None:
+    if args.release_raw_dataset is None:
+        return None
+    return VLLMReleaseBenchmarkConfig(
+        raw_dataset_specs=tuple(args.release_raw_dataset),
+        generator_factory=args.release_generator_factory,
+        model_revision=args.release_model_revision,
+        limit_per_dataset=args.release_limit_per_dataset,
+        warmups=args.release_warmups,
     )
 
 

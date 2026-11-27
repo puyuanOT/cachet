@@ -2329,6 +2329,7 @@ def test_generated_runner_installs_locked_vllm_closure_and_patched_wheel(
             "pip",
             "install",
             "--require-hashes",
+            "--no-deps",
             "--only-binary",
             ":all:",
             "--requirement",

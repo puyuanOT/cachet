@@ -616,6 +616,7 @@ def generate_benchmark_handoff_bundles(
         raise ValueError("storage_layout must match layout.storage_layout")
     if kv_payload_axis_order_from_value(config.payload_axis_order) != layout.payload_axis_order:
         raise ValueError("payload_axis_order must match layout.payload_axis_order")
+    _require_generator_identity_matches(generator, config)
 
     examples = load_benchmark_jsonl(
         input_jsonl,
@@ -911,6 +912,26 @@ def enrich_benchmark_records_with_handoffs(
     return tuple(enriched_records)
 
 
+_GENERATOR_IDENTITY_FIELDS = ("model_revision", "tokenizer_revision", "generator_family", "generator_version")
+
+
+def _require_generator_identity_matches(generator: KVChunkGenerator, config: CacheBuildConfig) -> None:
+    """Reject a resolved artifact identity the generator did not actually load.
+
+    Generators that do not declare an identity field are not checked for it.
+    """
+
+    for field_name in _GENERATOR_IDENTITY_FIELDS:
+        declared = getattr(generator, field_name, None)
+        stamped = getattr(config, field_name)
+        if declared is None or stamped == UNRESOLVED_IDENTITY or declared == stamped:
+            continue
+        raise ValueError(
+            f"{field_name} {stamped!r} does not match the generator's {declared!r}; "
+            "configure the generator with the same identity the artifacts claim"
+        )
+
+
 def _validated_arm_handoff_params(
     value: object,
     *,
@@ -1059,6 +1080,13 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
             "TokenContract, and payload hashes. Such bundles are not publication-ready."
         ),
     )
+    parser.add_argument(
+        "--artifact-identity-output-json",
+        help=(
+            "Write the bundle's ArtifactIdentity record here for benchmark_runner "
+            "--artifact-identity-json publication gating."
+        ),
+    )
     try:
         args = parser.parse_args(argv)
         layout = _bundle_layout_from_args(args)
@@ -1109,6 +1137,18 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
             uc_volume_root=args.uc_volume_root,
             require_artifact_contract=not args.allow_uncontracted_artifact,
         )
+        if args.artifact_identity_output_json is not None:
+            identity = result.cache_generation.artifact_identity
+            if identity is None:
+                raise ValueError(
+                    "--artifact-identity-output-json requires a generator that stamps ArtifactIdentity"
+                )
+            identity_path = local_path(args.artifact_identity_output_json)
+            identity_path.parent.mkdir(parents=True, exist_ok=True)
+            identity_path.write_text(
+                json.dumps(identity.to_record(), indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
         print(
             json.dumps(
                 {

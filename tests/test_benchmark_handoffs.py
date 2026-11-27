@@ -727,6 +727,40 @@ def test_generate_benchmark_handoff_bundles_writes_payloads_manifest_and_handoff
         assert handoff_record["handle"]["total_bytes"] == payload_path.stat().st_size
 
 
+@pytest.mark.parametrize("declared_revision", ["unresolved", "other-revision"])
+def test_generate_benchmark_handoff_bundles_rejects_identity_the_generator_did_not_load(
+    tmp_path, declared_revision
+):
+    input_path = tmp_path / "biography.jsonl"
+    input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
+    generator = AlignedGenerator()
+    generator.model_revision = declared_revision
+
+    with pytest.raises(ValueError, match="model_revision 'pinned-revision' does not match the generator's"):
+        generate_benchmark_handoff_bundles(
+            input_path,
+            output_dir=tmp_path / "bundles",
+            generator=generator,
+            layout=tiny_layout(),
+            align_bytes=1,
+            require_artifact_contract=False,
+            model_revision="pinned-revision",
+        )
+    assert not (tmp_path / "bundles").exists()
+
+    generator.model_revision = "pinned-revision"
+    result = generate_benchmark_handoff_bundles(
+        input_path,
+        output_dir=tmp_path / "bundles",
+        generator=generator,
+        layout=tiny_layout(),
+        align_bytes=1,
+        require_artifact_contract=False,
+        model_revision="pinned-revision",
+    )
+    assert result.cache_generation.chunk_count == 1
+
+
 def test_custom_dataset_handoff_uses_the_runner_scorer_prompt_prefix(tmp_path):
     input_path = tmp_path / "custom.jsonl"
     input_path.write_text(

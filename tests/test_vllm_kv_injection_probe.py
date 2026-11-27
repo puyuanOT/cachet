@@ -26,6 +26,8 @@ from document_kv_cache.native_probe_factories import (
     _inspect_delegate_adapter_contract,
     native_probe_adapter_contract_to_record,
 )
+from document_kv_cache.probe_fixtures import EngineProbeFixtureConfig, write_qwen3_v1_engine_probe_fixture
+from document_kv_cache.release_evidence import _validate_v1_qwen3_probe_layout
 from document_kv_cache.serving_env import VLLM_VERSION
 from vllm_kv_injection.probe import (
     NativeVLLMConnectorFactoryResult,
@@ -43,7 +45,11 @@ from vllm_kv_injection.probe import (
     build_in_memory_debug_probe,
     build_native_connector_probe,
 )
-from vllm_kv_injection.vllm_native_provider import DOCUMENT_KV_NATIVE_PROVIDER_FACTORY
+from vllm_kv_injection.vllm_layer_mapping import document_kv_vllm_probe_layer_names
+from vllm_kv_injection.vllm_native_provider import (
+    DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
+    DocumentKVNativeProbeConnector,
+)
 from vllm_kv_injection.protocol import KVCacheHandle, KVLayout, KVSegment
 from vllm_kv_injection.vllm_runtime_contract import VLLM_KV_CONNECTOR_V1_RUNTIME
 from vllm_kv_injection.vllm_runtime_contract import vllm_kv_connector_v1_contract_to_record
@@ -435,6 +441,54 @@ def test_build_native_connector_probe_for_engine_probe_runner(tmp_path, monkeypa
     assert record["metadata"][VLLM_PROBE_METADATA_RUNTIME_CONTRACT] == VLLM_KV_CONNECTOR_V1_RUNTIME
     assert record["metadata"]["runtime.owner"] == "vllm"
     validate_engine_kv_connector_probe_record(record)
+
+
+def test_native_connector_probe_runs_on_the_release_probe_fixture(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    monkeypatch.setattr("vllm_kv_injection.probe.package_metadata.version", _installed_vllm_version)
+    fixture = write_qwen3_v1_engine_probe_fixture(
+        EngineProbeFixtureConfig(output_dir=tmp_path, backend=ServingBackend.VLLM, payload_mode="merged")
+    )
+
+    result = run_engine_kv_connector_probe(
+        EngineKVProbeConfig(
+            handoff_json=fixture.handoff_json,
+            probe_factory="vllm_kv_injection.probe:build_native_connector_probe",
+            expected_backend=ServingBackend.VLLM,
+            metadata={VLLM_PROBE_METADATA_CONNECTOR_FACTORY: VLLM_DOCUMENT_KV_NATIVE_PROBE_CONNECTOR_FACTORY},
+        )
+    )
+
+    record = engine_kv_connector_probe_result_to_record(result)
+    validate_engine_kv_connector_probe_record(record)
+    assert record["bound"] is True
+    assert record["layout"]["shares_kv_storage"] is True
+    _validate_v1_qwen3_probe_layout(result.layout)
+
+
+def test_native_probe_connector_injects_shared_kv_release_payload_into_triton_cache(tmp_path):
+    torch = pytest.importorskip("torch")
+    fixture = write_qwen3_v1_engine_probe_fixture(
+        EngineProbeFixtureConfig(output_dir=tmp_path, backend=ServingBackend.VLLM, payload_mode="merged")
+    )
+    ready = fixture.adapter_request.ready_request
+    kv_handle = ready.handle
+    layout = kv_handle.layout
+    assert layout.shares_kv_storage is True
+    connector = DocumentKVNativeProbeConnector()
+
+    connector.inject(kv_handle, connector.reserve(kv_handle), payload=ready.payload)
+
+    payload = torch.frombuffer(bytearray(ready.payload), dtype=torch.int8).view(
+        kv_handle.total_tokens, layout.num_layers, 2, layout.num_kv_heads, layout.head_size
+    )
+    caches = connector.provider._kv_caches
+    layer_names = document_kv_vllm_probe_layer_names(layout)
+    assert set(caches) == set(layer_names)
+    for layer_index, layer_name in enumerate(layer_names):
+        injected = caches[layer_name].permute(0, 2, 1, 3).reshape(-1, layout.num_kv_heads, 2 * layout.head_size)
+        expected = torch.cat((payload[:, layer_index, 0], payload[:, layer_index, 1]), dim=-1)
+        assert torch.equal(injected[: kv_handle.total_tokens], expected), layer_name
 
 
 def test_build_native_connector_probe_requires_installed_vllm_metadata(tmp_path, monkeypatch):

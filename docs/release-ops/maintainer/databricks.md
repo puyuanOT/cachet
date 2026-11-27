@@ -72,9 +72,12 @@ python -m document_kv_cache.databricks_job \
 ## Serving Smoke Jobs
 
 `cachet-vllm-smoke-databricks-job` accepts the same prepared-dataset, handoff
-generation, and sizing flags as `cachet-vllm-smoke` and installs the uploaded
-wheel into both the driver and the isolated vLLM environment; see
-[`databricks/README.md`](../../../databricks/README.md) for the payload command.
+generation, release-benchmark, and sizing flags as `cachet-vllm-smoke` and
+installs the uploaded wheel into both the driver and the isolated vLLM
+environment; see [`databricks/README.md`](../../../databricks/README.md) for the
+payload commands. With `--release-raw-dataset`, the job runs the
+[vLLM release benchmark](benchmarks.md#vllm-release-benchmark) and its run
+status is the release bundle's benchmark run status.
 
 For SGLang, the preferred handoff-backed readiness payload uses
 `--generate-live-handoff` plus non-secret Transformers runtime variables:

@@ -139,6 +139,30 @@ cachet-vllm-smoke-databricks-job \
   --output-json vllm-smoke-runs-submit-reference.json
 ```
 
+The release benchmark uses the same job with raw V1 datasets staged by
+`cachet.benchmark_dataset_sources`. Its run status is the release bundle's
+benchmark run, and `release-plan-execution.json`, `v1-benchmark.json`, and
+`v1-evidence-gate.json` in the output directory are the bundle's plan-execution
+and benchmark inputs:
+
+```bash
+cachet-vllm-smoke-databricks-job \
+  --benchmark-id v1_vllm_release_001 \
+  --output-dir /Volumes/catalog/schema/volume/cachet-v1-release \
+  --runner-python-file dbfs:/benchmarks/run_vllm_smoke.py \
+  --runner-script-output run_vllm_smoke.py \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.3.0-py3-none-any.whl \
+  --single-user-name user@example.com \
+  --hardware-target aws-g6-l4 \
+  --gpu-memory-utilization 0.70 \
+  --release-limit-per-dataset 54 \
+  --release-raw-dataset biography=/Volumes/catalog/schema/volume/raw/biography.jsonl \
+  --release-raw-dataset hotpotqa=/Volumes/catalog/schema/volume/raw/hotpotqa.jsonl \
+  --release-raw-dataset musique=/Volumes/catalog/schema/volume/raw/musique.jsonl \
+  --release-raw-dataset niah=/Volumes/catalog/schema/volume/raw/niah.jsonl \
+  --output-json vllm-release-runs-submit-reference.json
+```
+
 For native engine-probe evidence, generate the probe runner and `runs/submit`
 payload after uploading the handoff JSON, payload bytes, package wheel, and
 workspace-specific probe factory module:

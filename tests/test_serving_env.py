@@ -74,6 +74,45 @@ from document_kv_cache.serving_env import (
 )
 
 
+_PATCHED_WHEEL_DIGEST = "c" * 64
+_PATCHED_WHEEL_NAME = (
+    f"vllm-{VLLM_PACKAGE_VERSION}-1cachete5m2{_PATCHED_WHEEL_DIGEST[:16]}-cp38-abi3-manylinux_2_28_x86_64.whl"
+)
+_PATCHED_WHEEL_FILE_URI_NAME = _PATCHED_WHEEL_NAME.replace("+", "%2B")
+
+
+@pytest.mark.parametrize(
+    ("raw_uri", "expected_uri"),
+    [
+        ("dbfs:/Volumes/catalog/schema/volume/wheels", "file:///Volumes/catalog/schema/volume/wheels"),
+        ("dbfs:///Volumes/catalog/schema/volume/wheels", "file:///Volumes/catalog/schema/volume/wheels"),
+        ("/Volumes/catalog/schema/volume/wheels", "file:///Volumes/catalog/schema/volume/wheels"),
+        ("dbfs:/FileStore/wheels", "file:///dbfs/FileStore/wheels"),
+    ],
+    ids=("dbfs-uc-volume", "dbfs-triple-slash-uc-volume", "uc-volume-path", "dbfs-root"),
+)
+def test_patched_vllm_wheel_install_spec_uses_the_cluster_mount_for_the_uri(monkeypatch, raw_uri, expected_uri):
+    monkeypatch.setenv(public_serving_env.VLLM_PATCHED_WHEEL_URI_ENV, f"{raw_uri}/{_PATCHED_WHEEL_NAME}")
+    monkeypatch.setenv(public_serving_env.VLLM_PATCHED_WHEEL_SHA256_ENV, _PATCHED_WHEEL_DIGEST)
+
+    spec = public_serving_env.patched_vllm_wheel_install_spec()
+
+    assert spec == f"vllm @ {expected_uri}/{_PATCHED_WHEEL_FILE_URI_NAME}#sha256={_PATCHED_WHEEL_DIGEST}"
+
+
+@pytest.mark.parametrize(
+    "raw_uri",
+    ["dbfs:/FileStore/a/../wheels", "dbfs:/Volumes/catalog/schema/volume//wheels"],
+    ids=("parent-component", "empty-component"),
+)
+def test_patched_vllm_wheel_install_spec_rejects_unsafe_dbfs_paths(monkeypatch, raw_uri):
+    monkeypatch.setenv(public_serving_env.VLLM_PATCHED_WHEEL_URI_ENV, f"{raw_uri}/{_PATCHED_WHEEL_NAME}")
+    monkeypatch.setenv(public_serving_env.VLLM_PATCHED_WHEEL_SHA256_ENV, _PATCHED_WHEEL_DIGEST)
+
+    with pytest.raises(ValueError, match="DOCUMENT_KV_VLLM_PATCHED_WHEEL_URI must be a valid dbfs:/ URI"):
+        public_serving_env.patched_vllm_wheel_install_spec()
+
+
 def test_vllm_runtime_lock_is_packaged_hashed_and_excludes_vllm(monkeypatch):
     lock_path = vllm_runtime_lock_path()
     lock_bytes = lock_path.read_bytes()

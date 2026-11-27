@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import math
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -789,6 +790,12 @@ def sglang_live_v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...
         _validate_v1_measurement_examples_have_consistent_expected_answers(measurements, issues)
         _validate_v1_measurement_examples_have_consistent_logical_prompt_tokens(measurements, issues)
         _validate_v1_measurements(measurements, issues)
+        suite_repeats = suite.get("repeats") if suite is not None else None
+        _validate_sglang_live_v1_output_parity(
+            measurements,
+            repeat_count=suite_repeats if isinstance(suite_repeats, int) and _is_positive_int(suite_repeats) else 0,
+            issues=issues,
+        )
     if measurements is not None and report_rows is not None:
         _validate_v1_report_aggregates_match_measurements(report_rows, measurements, issues)
     if report_rows is not None and comparisons is not None:
@@ -888,6 +895,7 @@ def _validate_sglang_live_v1_cache_hit_validations(
         else set()
     )
     observed_dataset_repeats: set[tuple[str, int]] = set()
+    validated_bindings: Counter[tuple[str, str, Any]] = Counter()
     for index, validation in enumerate(validations):
         label = f"SGLang live V1 benchmark cache_hit_validations[{index}]"
         if not isinstance(validation, Mapping):
@@ -912,6 +920,7 @@ def _validate_sglang_live_v1_cache_hit_validations(
             observed_dataset_repeats.add((dataset, repeat_index))
             if isinstance(example_id, str) and example_id and measurements is not None:
                 binding = (dataset, example_id, repeat_index)
+                validated_bindings[binding] += 1
                 if binding not in cache_measurement_bindings:
                     issues.append(f"{label} must match a measured cache-arm request")
         if validation.get("ok") is not True:
@@ -933,6 +942,19 @@ def _validate_sglang_live_v1_cache_hit_validations(
             )
         _validate_sglang_live_v1_cache_hit_prefill_row(validation, label, issues)
 
+    unvalidated = sorted(cache_measurement_bindings - set(validated_bindings))
+    if unvalidated:
+        issues.append(
+            "SGLang live V1 benchmark cache_hit_validations missing cache-arm requests: "
+            + ", ".join(f"{dataset}/{example_id} repeat {repeat}" for dataset, example_id, repeat in unvalidated)
+        )
+    duplicated = sorted(binding for binding, count in validated_bindings.items() if count > 1)
+    if duplicated:
+        issues.append(
+            "SGLang live V1 benchmark cache_hit_validations must validate each cache-arm request once: "
+            + ", ".join(f"{dataset}/{example_id} repeat {repeat}" for dataset, example_id, repeat in duplicated)
+        )
+
     if repeat_count:
         expected = {
             (dataset, repeat)
@@ -948,6 +970,66 @@ def _validate_sglang_live_v1_cache_hit_validations(
                 "SGLang live V1 benchmark cache_hit_validations missing required "
                 f"dataset repeats: {', '.join(missing)}"
             )
+
+
+def _validate_sglang_live_v1_output_parity(
+    measurements: Sequence[Any],
+    *,
+    repeat_count: int,
+    issues: list[str],
+) -> None:
+    """Every example repeat needs exactly one baseline and one cache output, and they must be identical."""
+
+    outputs: dict[tuple[str, str, int], dict[str, list[Any]]] = {}
+    for index, measurement in enumerate(measurements):
+        if not isinstance(measurement, Mapping):
+            continue
+        dataset = measurement.get("dataset")
+        example_id = measurement.get("example_id")
+        arm_id = measurement.get("arm_id")
+        if (
+            dataset not in SUPPORTED_V1_DATASETS
+            or not isinstance(example_id, str)
+            or not example_id
+            or arm_id not in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM)
+        ):
+            continue
+        label = f"SGLang live V1 benchmark measurements[{index}]"
+        metadata = measurement.get("metadata")
+        repeat_index = _positive_int_metadata(metadata.get("repeat_index")) if isinstance(metadata, Mapping) else None
+        if repeat_index is None:
+            issues.append(f"{label}.metadata.repeat_index must be a positive integer")
+            continue
+        if repeat_count and repeat_index > repeat_count:
+            issues.append(f"{label}.metadata.repeat_index must not exceed suite repeats")
+        outputs.setdefault((dataset, example_id, repeat_index), {}).setdefault(arm_id, []).append(
+            measurement.get("output_text")
+        )
+
+    example_repeats: dict[tuple[str, str], set[int]] = {}
+    for (dataset, example_id, repeat_index), arm_outputs in sorted(outputs.items()):
+        example_repeats.setdefault((dataset, example_id), set()).add(repeat_index)
+        label = f"SGLang live V1 benchmark {dataset}/{example_id} repeat {repeat_index}"
+        for arm_id in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM):
+            count = len(arm_outputs.get(arm_id, ()))
+            if count != 1:
+                issues.append(f"{label} must have exactly one {arm_id} measurement, found {count}")
+        baseline_outputs = arm_outputs.get(BASELINE_PREFILL_ARM, [])
+        cache_outputs = arm_outputs.get(CACHE_REUSE_ARM, [])
+        if len(baseline_outputs) == 1 and len(cache_outputs) == 1 and cache_outputs[0] != baseline_outputs[0]:
+            issues.append(
+                f"SGLang live V1 benchmark {dataset}/{example_id} {CACHE_REUSE_ARM} repeat {repeat_index} "
+                f"output must match {BASELINE_PREFILL_ARM}"
+            )
+    if repeat_count:
+        expected_repeats = set(range(1, repeat_count + 1))
+        for (dataset, example_id), observed in sorted(example_repeats.items()):
+            missing = sorted(expected_repeats - observed)
+            if missing:
+                issues.append(
+                    f"SGLang live V1 benchmark {dataset}/{example_id} missing repeats: "
+                    f"{', '.join(str(repeat) for repeat in missing)}"
+                )
 
 
 def _sglang_live_v1_cache_measurement_bindings(

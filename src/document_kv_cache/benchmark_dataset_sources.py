@@ -19,7 +19,10 @@ from document_kv_cache.dataset_prep import (
     redact_biography_document_text,
     write_v1_jsonl,
 )
-from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
+from document_kv_cache.model_profiles import (
+    QWEN3_4B_INSTRUCT_HF_MODEL_ID,
+    QWEN3_4B_INSTRUCT_HF_REVISION,
+)
 from document_kv_cache.quality_v2 import (
     QUALITY_V2_NIAH_SEED,
     build_quality_v2_niah_records,
@@ -42,7 +45,7 @@ DEFAULT_NIAH_SAMPLE_COUNT = 1000
 DEFAULT_NIAH_CONTEXT_TOKEN_TARGETS = (8192, 16384, 32768)
 DEFAULT_NIAH_NEEDLE_POSITIONS = (0.1, 0.5, 0.9)
 NIAH_TOKENIZER_ID = QWEN3_4B_INSTRUCT_HF_MODEL_ID
-NIAH_TOKENIZER_REVISION = "cdbee75f17c01a7cc42f958dc650907174af0554"
+NIAH_TOKENIZER_REVISION = QWEN3_4B_INSTRUCT_HF_REVISION
 NIAH_HAYSTACK_SOURCE = "hotpotqa+musique context paragraphs"
 DATASET_FILENAMES = {
     "biography": "biography.jsonl",

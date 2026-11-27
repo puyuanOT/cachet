@@ -20,18 +20,31 @@ from document_kv_cache._hardware_targets import (
 from document_kv_cache.databricks_job import (
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
     DEFAULT_DATABRICKS_DATA_SECURITY_MODE,
+    DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS,
     DEFAULT_DATABRICKS_SPARK_VERSION,
+    DEFAULT_DATABRICKS_TASK_MAX_RETRIES,
     DatabricksSingleNodeGPUClusterConfig,
     _spark_env_vars_from_cli,
+    _validated_databricks_run_timeout_seconds,
     _validated_spark_env_vars,
     build_single_node_gpu_cluster,
 )
 from document_kv_cache.quality_v2 import QUALITY_V2_MAX_TOKENS
+from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_REVISION
 from document_kv_cache.vllm_smoke import (
+    DEFAULT_GPU_MEMORY_UTILIZATION,
     DEFAULT_LOCAL_ROOT,
+    DEFAULT_MAX_MODEL_LEN,
+    RELEASE_CACHE_METHOD,
+    RELEASE_GENERATOR_FACTORY,
+    RELEASE_GPU_MEMORY_UTILIZATION,
+    RELEASE_LIMIT_PER_DATASET,
+    RELEASE_MAX_MODEL_LEN,
     SERVER_HOST,
     SERVER_PORT,
+    VLLMReleaseBenchmarkConfig,
     parse_dataset_specs,
+    resolve_release_sized_defaults,
 )
 
 
@@ -94,6 +107,7 @@ class DatabricksVLLMSmokeJobConfig:
     runner_python_file: str
     run_name: str = DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME
     task_key: str = DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY
+    run_timeout_seconds: int = DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS
     hardware_target: str | None = None
     node_type_id: str = DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
     spark_version: str = DEFAULT_DATABRICKS_SPARK_VERSION
@@ -108,9 +122,9 @@ class DatabricksVLLMSmokeJobConfig:
     server_host: str = SERVER_HOST
     server_port: int = SERVER_PORT
     client_host: str = SERVER_HOST
-    max_model_len: int = 4096
+    max_model_len: int | None = None
     max_num_seqs: int = 2
-    gpu_memory_utilization: float = 0.85
+    gpu_memory_utilization: float | None = None
     benchmark_repeats: int = 1
     payload_cache_max_bytes: int = 0
     dataset_specs: tuple[str, ...] = ()
@@ -118,6 +132,7 @@ class DatabricksVLLMSmokeJobConfig:
     benchmark_handoff_output_dir: str | None = None
     benchmark_handoff_dtype: str = "bfloat16"
     benchmark_handoff_align_bytes: int = 4096
+    release_benchmark: VLLMReleaseBenchmarkConfig | None = None
     availability: str = "ON_DEMAND"
     zone_id: str = "auto"
     custom_tags: Mapping[str, str] = field(default_factory=dict)
@@ -134,6 +149,7 @@ class DatabricksVLLMSmokeJobConfig:
             raise ValueError("run_name must be non-empty")
         if not self.task_key:
             raise ValueError("task_key must be non-empty")
+        _validated_databricks_run_timeout_seconds(self.run_timeout_seconds)
         object.__setattr__(
             self,
             "hardware_target",
@@ -157,12 +173,15 @@ class DatabricksVLLMSmokeJobConfig:
             raise ValueError("server_port must be between 1 and 65535")
         if not self.client_host:
             raise ValueError("client_host must be non-empty")
-        if self.max_model_len <= 0:
-            raise ValueError("max_model_len must be positive")
+        max_model_len, gpu_memory_utilization = resolve_release_sized_defaults(
+            self.max_model_len,
+            self.gpu_memory_utilization,
+            release=self.release_benchmark is not None,
+        )
+        object.__setattr__(self, "max_model_len", max_model_len)
+        object.__setattr__(self, "gpu_memory_utilization", gpu_memory_utilization)
         if self.max_num_seqs <= 0:
             raise ValueError("max_num_seqs must be positive")
-        if not 0 < self.gpu_memory_utilization <= 1:
-            raise ValueError("gpu_memory_utilization must be in (0, 1]")
         if isinstance(self.benchmark_repeats, bool) or not isinstance(self.benchmark_repeats, int):
             raise TypeError("benchmark_repeats must be a positive integer")
         if self.benchmark_repeats <= 0:
@@ -187,6 +206,21 @@ class DatabricksVLLMSmokeJobConfig:
             raise ValueError("benchmark_handoff_dtype must be non-empty")
         if type(self.benchmark_handoff_align_bytes) is not int or self.benchmark_handoff_align_bytes <= 0:
             raise ValueError("benchmark_handoff_align_bytes must be a positive integer")
+        if self.release_benchmark is not None:
+            if not isinstance(self.release_benchmark, VLLMReleaseBenchmarkConfig):
+                raise TypeError("release_benchmark must be a VLLMReleaseBenchmarkConfig")
+            if self.dataset_specs or self.benchmark_handoff_generator_factory is not None:
+                raise ValueError(
+                    "release_benchmark prepares its own datasets and handoffs; "
+                    "do not combine it with dataset_specs or benchmark handoff generation"
+                )
+            if self.payload_cache_max_bytes:
+                raise ValueError("release_benchmark requires the payload cache to be disabled for cold reads")
+            if self.release_benchmark.cache_method != RELEASE_CACHE_METHOD:
+                raise ValueError(
+                    f"the Databricks release job runs the {RELEASE_CACHE_METHOD!r} cache method only, "
+                    f"not {self.release_benchmark.cache_method!r}"
+                )
         object.__setattr__(self, "spark_env_vars", _validated_spark_env_vars(self.spark_env_vars))
         _DEFAULT_CLUSTER_CONFIG_FROM_VLLM_SMOKE_JOB(self)
 
@@ -197,6 +231,8 @@ def build_databricks_vllm_smoke_run_submit_payload(config: DatabricksVLLMSmokeJo
         cluster["spark_env_vars"] = dict(config.spark_env_vars)
     task: dict[str, Any] = {
         "task_key": config.task_key,
+        "timeout_seconds": config.run_timeout_seconds,
+        "max_retries": DEFAULT_DATABRICKS_TASK_MAX_RETRIES,
         "new_cluster": cluster,
         "spark_python_task": {
             "python_file": config.runner_python_file,
@@ -207,6 +243,7 @@ def build_databricks_vllm_smoke_run_submit_payload(config: DatabricksVLLMSmokeJo
         task["spark_python_task"]["parameters"].extend(["--package-wheel-uri", config.wheel_uri])
     return {
         "run_name": config.run_name,
+        "timeout_seconds": config.run_timeout_seconds,
         "tasks": [task],
     }
 
@@ -304,6 +341,22 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
         )
         if config.benchmark_handoff_output_dir is not None:
             parameters.extend(["--benchmark-handoff-output-dir", config.benchmark_handoff_output_dir])
+    release = config.release_benchmark
+    if release is not None:
+        for raw_spec in release.raw_dataset_specs:
+            parameters.extend(["--release-raw-dataset", raw_spec])
+        parameters.extend(
+            [
+                "--release-generator-factory",
+                release.generator_factory,
+                "--release-model-revision",
+                release.model_revision,
+                "--release-warmups",
+                str(release.warmups),
+                "--release-limit-per-dataset",
+                str(release.limit_per_dataset),
+            ]
+        )
     return parameters
 
 
@@ -316,6 +369,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--runner-python-file", required=True, help="Cluster-visible runner script path or URI.")
     parser.add_argument("--run-name", default=DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME)
     parser.add_argument("--task-key", default=DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY)
+    parser.add_argument(
+        "--run-timeout-seconds",
+        type=int,
+        default=DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS,
+        help="Databricks cancels the run after this many seconds; the task is never retried.",
+    )
     parser.add_argument(
         "--hardware-target",
         choices=SUPPORTED_V1_HARDWARE_TARGETS,
@@ -337,9 +396,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--server-host", default=SERVER_HOST)
     parser.add_argument("--server-port", type=int, default=SERVER_PORT)
     parser.add_argument("--client-host", default=SERVER_HOST)
-    parser.add_argument("--max-model-len", type=int, default=4096)
+    parser.add_argument(
+        "--max-model-len",
+        type=int,
+        help=f"Defaults to {DEFAULT_MAX_MODEL_LEN}, or {RELEASE_MAX_MODEL_LEN} with --release-raw-dataset.",
+    )
     parser.add_argument("--max-num-seqs", type=int, default=2)
-    parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
+    parser.add_argument(
+        "--gpu-memory-utilization",
+        type=float,
+        help=(
+            f"Defaults to {DEFAULT_GPU_MEMORY_UTILIZATION}, or {RELEASE_GPU_MEMORY_UTILIZATION} "
+            "with --release-raw-dataset."
+        ),
+    )
     parser.add_argument(
         "--benchmark-repeats",
         type=int,
@@ -378,6 +448,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--benchmark-handoff-dtype", default="bfloat16")
     parser.add_argument("--benchmark-handoff-align-bytes", type=int, default=4096)
     parser.add_argument(
+        "--release-raw-dataset",
+        action="append",
+        default=None,
+        metavar="DATASET=JSONL_PATH",
+        help=(
+            "Run the publication release benchmark from this cluster-visible raw V1 dataset. "
+            "Repeat for all four V1 datasets."
+        ),
+    )
+    parser.add_argument(
+        "--release-limit-per-dataset",
+        type=int,
+        default=RELEASE_LIMIT_PER_DATASET,
+        help=f"Rows prepared per raw dataset (default {RELEASE_LIMIT_PER_DATASET}).",
+    )
+    parser.add_argument("--release-warmups", type=int, default=1)
+    parser.add_argument("--release-model-revision", default=QWEN3_4B_INSTRUCT_HF_REVISION)
+    parser.add_argument("--release-generator-factory", default=RELEASE_GENERATOR_FACTORY)
+    parser.add_argument(
         "--spark-env-var",
         action="append",
         default=None,
@@ -391,12 +480,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        release_benchmark = None
+        if args.release_raw_dataset is not None:
+            release_benchmark = VLLMReleaseBenchmarkConfig(
+                raw_dataset_specs=tuple(args.release_raw_dataset),
+                generator_factory=args.release_generator_factory,
+                model_revision=args.release_model_revision,
+                limit_per_dataset=args.release_limit_per_dataset,
+                warmups=args.release_warmups,
+            )
         config = DatabricksVLLMSmokeJobConfig(
             benchmark_id=args.benchmark_id,
             output_dir=args.output_dir,
             runner_python_file=args.runner_python_file,
             run_name=args.run_name,
             task_key=args.task_key,
+            run_timeout_seconds=args.run_timeout_seconds,
             node_type_id=databricks_node_type_for_hardware_target(args.hardware_target, args.node_type_id),
             hardware_target=args.hardware_target,
             spark_version=args.spark_version,
@@ -421,6 +520,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             benchmark_handoff_output_dir=args.benchmark_handoff_output_dir,
             benchmark_handoff_dtype=args.benchmark_handoff_dtype,
             benchmark_handoff_align_bytes=args.benchmark_handoff_align_bytes,
+            release_benchmark=release_benchmark,
             spark_env_vars=_spark_env_vars_from_cli(args.spark_env_var or ()),
         )
         if args.runner_script_output:

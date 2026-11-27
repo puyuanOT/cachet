@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,9 @@ from document_kv_cache.quality_v2 import (
 )
 from document_kv_cache.storage import local_path
 
+MERGE_ISOLATED_COMMAND = "merge-isolated"
+EVIDENCE_POLICIES = ("smoke", "canary", "publication")
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     from document_kv_cache.benchmark_runner import (
@@ -39,7 +43,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_openai_compatible_v1_benchmark,
     )
 
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] == [MERGE_ISOLATED_COMMAND]:
+        return merge_isolated_main(arguments[1:])
+
     parser = argparse.ArgumentParser(
+        epilog=(
+            f"Run '{MERGE_ISOLATED_COMMAND} --help' to merge one-arm records from "
+            "physically isolated executions into one gated comparison."
+        ),
         description=(
             "Run the V1 document KV-cache benchmark against OpenAI-compatible "
             "vLLM/SGLang servers."
@@ -123,7 +135,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--warmups", type=int, default=0)
     parser.add_argument(
         "--evidence-policy",
-        choices=("smoke", "canary", "publication"),
+        choices=EVIDENCE_POLICIES,
         default="smoke",
     )
     parser.add_argument("--api-key")
@@ -267,7 +279,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "variations whose reference also uses cached physical inputs."
         ),
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args(arguments)
 
     try:
         arms, arm_base_urls, arm_endpoints, arm_extra_bodies = _arm_specs_from_cli(
@@ -361,42 +373,142 @@ def main(argv: Sequence[str] | None = None) -> int:
             artifact_identities=artifact_identities,
             cache_state_attestations=cache_state_attestations,
         )
-        if args.output_json:
-            output_path = local_path(args.output_json)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(
-                json.dumps(result_record, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
-        else:
-            print(json.dumps(result_record, indent=2, sort_keys=True))
-        if args.evidence_gate_output_json:
-            gate_path = local_path(args.evidence_gate_output_json)
-            gate_path.parent.mkdir(parents=True, exist_ok=True)
-            gate_path.write_text(
-                json.dumps(
-                    result_record["evidence_gate"],
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-    except Exception as exc:
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                },
-                indent=2,
-                sort_keys=True,
-            )
+        _write_result_record(
+            result_record,
+            output_json=args.output_json,
+            evidence_gate_output_json=args.evidence_gate_output_json,
         )
+    except Exception as exc:
+        _print_cli_error(exc)
         return 1
 
     return 0 if not any(measurement.error for measurement in result.measurements) else 2
+
+
+def merge_isolated_main(argv: Sequence[str] | None = None) -> int:
+    """Merge one-arm records from separate executions and gate the comparison."""
+
+    from document_kv_cache.benchmark_runner import merge_isolated_benchmark_run_records
+
+    parser = argparse.ArgumentParser(
+        prog=f"benchmark_runner {MERGE_ISOLATED_COMMAND}",
+        description=(
+            "Merge one-arm V1 benchmark records, each produced by its own runner "
+            "and serving process, into one comparison gated under the selected "
+            "evidence policy."
+        ),
+    )
+    parser.add_argument(
+        "--record-json",
+        action="append",
+        required=True,
+        help="One-arm benchmark record written by benchmark_runner --output-json. Repeat for every arm.",
+    )
+    parser.add_argument("--reference-arm-id", required=True)
+    parser.add_argument(
+        "--comparison-mode",
+        choices=("methods_same_setting", "single_method_setting_variation"),
+        default="methods_same_setting",
+    )
+    parser.add_argument("--varied-setting", default="")
+    parser.add_argument("--evidence-policy", choices=EVIDENCE_POLICIES, default="smoke")
+    parser.add_argument(
+        "--artifact-identity-json",
+        action="append",
+        help="ArtifactIdentity JSON used by publication gating. Repeat for all artifacts.",
+    )
+    parser.add_argument(
+        "--cache-state-attestation-json",
+        action="append",
+        help=(
+            "Cache-state attestation JSON, vLLM telemetry JSON, or a vLLM provider "
+            "telemetry .jsonl log. Repeat for every cache-arm execution."
+        ),
+    )
+    parser.add_argument(
+        "--sanitize-evidence",
+        action="store_true",
+        help=(
+            "Omit raw prompts, answers, and outputs from the merged record. The default full "
+            "record is the release-evidence input, like benchmark_runner --output-json."
+        ),
+    )
+    parser.add_argument("--output-json", required=True, help="Merged benchmark record output path.")
+    parser.add_argument("--evidence-gate-output-json", help="Write the merged evidence gate as a standalone JSON record.")
+    args = parser.parse_args(argv)
+
+    try:
+        records = []
+        for raw_path in args.record_json:
+            record = json.loads(local_path(raw_path).read_text(encoding="utf-8"))
+            if not isinstance(record, Mapping):
+                raise ValueError(f"benchmark record {raw_path} must contain an object")
+            records.append(record)
+        merged = merge_isolated_benchmark_run_records(
+            records,
+            reference_arm_id=args.reference_arm_id,
+            comparison_mode=args.comparison_mode,
+            varied_setting=args.varied_setting,
+            policy=args.evidence_policy,
+            cache_state_attestations=_cache_state_attestations_from_files(
+                args.cache_state_attestation_json or ()
+            ),
+            artifact_identities=_artifact_identities_from_files(
+                args.artifact_identity_json or ()
+            ),
+            sanitize_evidence=args.sanitize_evidence,
+        )
+        _write_result_record(
+            merged,
+            output_json=args.output_json,
+            evidence_gate_output_json=args.evidence_gate_output_json,
+        )
+    except Exception as exc:
+        _print_cli_error(exc)
+        return 1
+    measurements = merged.get("measurements", ())
+    return 0 if not any(
+        isinstance(measurement, Mapping) and measurement.get("error")
+        for measurement in measurements
+    ) else 2
+
+
+def _write_result_record(
+    record: Mapping[str, Any],
+    *,
+    output_json: str | None,
+    evidence_gate_output_json: str | None,
+) -> None:
+    if output_json:
+        output_path = local_path(output_json)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(record, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        print(json.dumps(record, indent=2, sort_keys=True))
+    if evidence_gate_output_json:
+        gate_path = local_path(evidence_gate_output_json)
+        gate_path.parent.mkdir(parents=True, exist_ok=True)
+        gate_path.write_text(
+            json.dumps(record["evidence_gate"], indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+
+def _print_cli_error(exc: Exception) -> None:
+    print(
+        json.dumps(
+            {
+                "ok": False,
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
 
 
 def _dataset_paths_from_cli(values: Sequence[str]) -> Mapping[str, Path]:
@@ -702,8 +814,8 @@ def _artifact_identities_from_files(paths: Sequence[str]) -> Mapping[str, Any]:
                 f"artifact identity file {raw_path} must contain an object"
             )
         identity = ArtifactIdentity.from_record(record)
-        if identity.artifact_id in identities:
-            raise ValueError(f"duplicate artifact identity {identity.artifact_id}")
+        # artifact_id is the digest of the whole record, so a repeated id is the
+        # same descriptor (for example one file per generated dataset).
         identities[identity.artifact_id] = identity
     return identities
 
@@ -711,13 +823,38 @@ def _artifact_identities_from_files(paths: Sequence[str]) -> Mapping[str, Any]:
 def _cache_state_attestations_from_files(paths: Sequence[str]) -> tuple[Any, ...]:
     from document_kv_cache.benchmark_gates import (
         CACHE_STATE_ATTESTATION_RECORD_TYPE,
+        VLLM_NATIVE_PROVIDER_LOAD_RECORD_TYPE,
         CacheStateAttestation,
         cache_state_attestation_from_vllm_telemetry,
     )
 
     attestations: list[CacheStateAttestation] = []
     for raw_path in paths:
-        record = json.loads(local_path(raw_path).read_text(encoding="utf-8"))
+        path = local_path(raw_path)
+        if path.suffix == ".jsonl":
+            # Provider telemetry logs interleave prefetch diagnostics with one
+            # load record per request; only the load records attest cache state.
+            for line_number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(),
+                start=1,
+            ):
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"cache-state telemetry {raw_path}:{line_number} is not valid JSON "
+                        f"(a truncated write?): {exc}"
+                    ) from exc
+                if not isinstance(record, Mapping):
+                    raise ValueError(
+                        f"cache-state telemetry {raw_path}:{line_number} must be an object"
+                    )
+                if record.get("record_type") == VLLM_NATIVE_PROVIDER_LOAD_RECORD_TYPE:
+                    attestations.append(cache_state_attestation_from_vllm_telemetry(record))
+            continue
+        record = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(record, Mapping):
             raise ValueError(
                 f"cache-state attestation file {raw_path} must contain an object"

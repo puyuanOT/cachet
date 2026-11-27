@@ -464,6 +464,8 @@ def _install_runtime_packages(argv: list[str]) -> tuple[list[str], int | None]:
                 args.package_wheel_uri,
                 venv_dir=venv_dir,
             )
+            # The lock omits vllm itself, which lock entries such as vllm-bnb-plugin
+            # depend on; the patched wheel supplies it next and `pip check` follows.
             subprocess.check_call(
                 [
                     venv_python,
@@ -471,6 +473,7 @@ def _install_runtime_packages(argv: list[str]) -> tuple[list[str], int | None]:
                     "pip",
                     "install",
                     "--require-hashes",
+                    "--no-deps",
                     "--only-binary",
                     ":all:",
                     "--requirement",

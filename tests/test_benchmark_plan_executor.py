@@ -1,5 +1,6 @@
 import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -200,6 +201,164 @@ def test_execute_benchmark_job_plan_records_nonzero_return_code_and_stops():
     assert record["ok"] is False
     assert record["commands"][0]["returncode"] == 7
     assert record["commands"][0]["error"] is None
+
+
+def test_execute_benchmark_job_plan_wraps_each_command_in_command_context():
+    from contextlib import contextmanager
+
+    events = []
+
+    @contextmanager
+    def command_context(name):
+        events.append(("enter", name))
+        yield
+        events.append(("exit", name))
+
+    results = execute_benchmark_job_plan(
+        {
+            "commands": [
+                {"name": "first", "argv": [sys.executable, "-c", "pass"]},
+                {"name": "second", "argv": [sys.executable, "-c", "pass"]},
+            ]
+        },
+        command_context=command_context,
+    )
+
+    assert [result.returncode for result in results] == [0, 0]
+    assert events == [("enter", "first"), ("exit", "first"), ("enter", "second"), ("exit", "second")]
+
+
+def test_execute_benchmark_job_plan_records_command_context_failure_and_stops():
+    from contextlib import contextmanager
+
+    @contextmanager
+    def command_context(name):
+        if name == "serve":
+            raise RuntimeError("server did not become ready")
+        yield
+
+    results = execute_benchmark_job_plan(
+        {
+            "commands": [
+                {"name": "serve", "argv": [sys.executable, "-c", "pass"]},
+                {"name": "skip", "argv": [sys.executable, "-c", "pass"]},
+            ]
+        },
+        command_context=command_context,
+    )
+    record = benchmark_command_results_to_record(results)
+
+    assert len(results) == 1
+    assert record["ok"] is False
+    assert record["commands"][0]["returncode"] == 1
+    assert record["commands"][0]["error"] == "RuntimeError: server did not become ready"
+
+
+def test_execute_benchmark_job_plan_kills_a_command_that_outlives_its_timeout(tmp_path):
+    from contextlib import contextmanager
+
+    exited = []
+
+    @contextmanager
+    def command_context(name):
+        try:
+            yield
+        finally:
+            exited.append(name)
+
+    plan = {
+        "commands": [
+            {"name": "hang", "argv": [sys.executable, "-c", "import time; time.sleep(60)"]},
+            {"name": "skip", "argv": [sys.executable, "-c", "pass"]},
+        ]
+    }
+
+    results = execute_benchmark_job_plan(plan, command_context=command_context, command_timeout_seconds=0.5)
+
+    assert [(result.name, result.returncode, result.error) for result in results] == [
+        ("hang", 124, "timed out after 0.5s")
+    ]
+    assert exited == ["hang"]
+    with pytest.raises(ValueError, match="command_timeout_seconds must be positive"):
+        execute_benchmark_job_plan(plan, command_timeout_seconds=0)
+
+    plan_path = tmp_path / "plan.json"
+    result_path = tmp_path / "result.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    exit_code = main(
+        ["--plan-json", str(plan_path), "--result-json", str(result_path), "--command-timeout-seconds", "0.5"]
+    )
+    assert exit_code == 2
+    assert json.loads(result_path.read_text(encoding="utf-8"))["commands"][0]["returncode"] == 124
+
+
+@pytest.mark.parametrize("command_timeout_seconds", [None, 30.0])
+def test_execute_benchmark_job_plan_records_a_teardown_timeout_as_a_context_failure(command_timeout_seconds):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def command_context(name):
+        yield
+        raise subprocess.TimeoutExpired(["vllm", "serve"], 30)
+
+    results = execute_benchmark_job_plan(
+        {
+            "commands": [
+                {"name": "arm", "argv": [sys.executable, "-c", "pass"]},
+                {"name": "skip", "argv": [sys.executable, "-c", "pass"]},
+            ]
+        },
+        command_context=command_context,
+        command_timeout_seconds=command_timeout_seconds,
+    )
+
+    assert [(result.name, result.returncode) for result in results] == [("arm", 1)]
+    assert results[0].error is not None
+    assert results[0].error.startswith("TimeoutExpired: Command '['vllm', 'serve']' timed out")
+
+
+def test_execute_benchmark_job_plan_records_a_suppressed_command_failure(monkeypatch):
+    from contextlib import suppress
+
+    def raise_runtime_error(*_args, **_kwargs):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(public_plan_executor.subprocess, "run", raise_runtime_error)
+
+    results = execute_benchmark_job_plan(
+        {"commands": [{"name": "arm", "argv": [sys.executable, "-c", "pass"]}]},
+        command_context=lambda _name: suppress(RuntimeError),
+    )
+
+    assert [(result.name, result.returncode, result.error) for result in results] == [
+        ("arm", 1, "command context suppressed the command's exception")
+    ]
+
+
+def test_execute_benchmark_job_plan_requires_command_context_for_isolated_arm_plans(tmp_path, capsys):
+    marker = tmp_path / "ran.txt"
+    plan = {
+        "isolated_arm_jobs": True,
+        "commands": [
+            {
+                "name": "run-benchmark-baseline_prefill",
+                "argv": [sys.executable, "-c", f"open({str(marker)!r}, 'w').close()"],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="require a command_context"):
+        execute_benchmark_job_plan(plan)
+    assert execute_benchmark_job_plan(plan, dry_run=True)[0].skipped is True
+
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    exit_code = main(["--plan-json", str(plan_path)])
+    record = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert "require a command_context" in record["error"]
+    assert not marker.exists()
 
 
 def test_execute_benchmark_job_plan_json_loads_plan_file(tmp_path):

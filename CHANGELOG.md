@@ -12,6 +12,45 @@
   `--gpt55-review-*` flags become `review_*` and `--review-*`, a non-empty
   `review_model` (`--review-model`) is required, and `GPT55_REVIEW_OUTCOMES`
   is renamed `PR_REVIEW_OUTCOMES`.
+- vLLM release benchmark: `cachet-vllm-smoke --release-raw-dataset` (also
+  through `cachet-vllm-smoke-databricks-job`) runs a V1 plan that generates
+  Vanilla handoffs, runs each arm against its own vLLM server with cold,
+  attested payload reads, merges the arms with the new
+  `benchmark_runner merge-isolated` subcommand (full record by default,
+  `--sanitize-evidence` for the sanitized form; the library
+  `merge_isolated_benchmark_run_records` gains `sanitize_evidence`, still
+  defaulting to sanitized), gates the comparison on latency
+  under the publication policy, and writes the plan-execution record the strict
+  release bundle requires. Plans gain `--isolated-arm-jobs`,
+  `--benchmark-handoff-cache-method`, `--benchmark-handoff-segment-per-document`,
+  and `--benchmark-handoff-generator-version`; generated bundles write their
+  artifact identity (`--artifact-identity-output-json`); cache-state
+  attestations can be read from the vLLM provider's telemetry `.jsonl` log; and
+  `execute_benchmark_job_plan` takes `command_context` and `env`.
+- `cachet-engine-launch-config build-sglang` and `build_sglang_launch_config`
+  default to the SGLang HiCache identity that the SGLang runtime preflight
+  requires: `DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE` is now
+  `sglang_kv_injection.document_kv_hicache_config.v1` and the default
+  injection method is `runtime-prefix-cache-bind`. The previous defaults
+  failed that preflight, so planned release-safe SGLang probes stopped before
+  probing.
+- The prepared-dataset SGLang live V1 benchmark passes on baseline parity
+  instead of correct answers: every pre-request cache flush and every request
+  succeeds, every cache-arm request passes its cache-hit check, and each
+  cache-arm output matches the baseline output for the same example and
+  repeat. Answer accuracy is still reported in the report rows but no longer
+  gated. `sglang_live_v1_benchmark_issues` re-checks parity from the recorded
+  measurements and now requires exactly one baseline and one cache measurement
+  per example repeat and exactly one cache-hit validation per cache-arm
+  request. The synthetic NIAH live check still requires the expected answer.
+- `storage.local_path` maps `dbfs:///Volumes/...` to the `/Volumes` mount, as
+  it already did for `dbfs:/Volumes/...`, and the patched vLLM wheel URI
+  (`DOCUMENT_KV_VLLM_PATCHED_WHEEL_URI`) now resolves `dbfs:` URIs the same
+  way instead of under `/dbfs`, where Unity Catalog clusters have no Volumes.
+- The vLLM native probe connector registers vLLM 0.30.0 Triton packed caches
+  (`[block, kv_head, block_slot, 2 * head_dim]`) for both shared and separate
+  K/V layouts, which serialize the same payload, so the release-safe probe runs
+  on the V1 Qwen3 shared K/V fixture that release evidence requires.
 - vLLM 0.30.0 (CUDA 12.9) serving profile, with the pinned hash-locked vLLM
   runtime lock shipped in the wheel, and `vllm_wheel_repack` for building the
   E5M2-patched vLLM wheel.

@@ -296,6 +296,15 @@ python -m document_kv_cache.vllm_smoke \
   flushes the prefix cache before the cache arm; it also flushes before the
   model-quality canary. Use `--no-flush-cache-before-cache-arm` or
   `--no-flush-cache-before-canary` only for diagnostics.
+- With prepared V1 datasets, the SGLang live benchmark
+  (`--live-benchmark-repeats`) checks that the cache arm matches the baseline,
+  not that answers are correct. It passes when every pre-request cache flush
+  and every request succeeds, every cache-arm request passes its cache-hit
+  check, and each cache-arm output is identical to the baseline output for the
+  same example and repeat. Answer accuracy is reported in the report rows but
+  not gated. Release evidence re-checks the pairing, parity, and per-request
+  cache-hit validations from the recorded measurements. The synthetic NIAH run
+  still requires the expected answer.
 - SGLang page keys must match the KV layout block size (`16` for the built-in
   Qwen3 V1 layout). Prepared SGLang runs default to that page size and fail
   before server startup when a handoff uses a different block size or its page

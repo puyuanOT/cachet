@@ -10,10 +10,11 @@ import math
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias
 
 from document_kv_cache.benchmarks import SUPPORTED_V1_DATASETS
 from document_kv_cache.storage import local_path
@@ -61,6 +62,10 @@ _BENCHMARK_JOB_PLAN_KEYS = frozenset(
         "benchmark_handoff_dtype",
         "benchmark_handoff_backend",
         "benchmark_handoff_sglang_hicache_page_size",
+        "benchmark_handoff_cache_method",
+        "benchmark_handoff_segment_per_document",
+        "benchmark_handoff_generator_version",
+        "isolated_arm_jobs",
         "planned_engine_probes",
         "notes",
     }
@@ -112,6 +117,7 @@ _BENCHMARK_JOB_PLAN_EXPERIMENT_KEYS = frozenset(
         "reference_arm_id",
     }
 )
+BenchmarkCommandContext: TypeAlias = Callable[[str], AbstractContextManager[object]]
 _HANDOFF_GENERATION_PREFIX = "generate-"
 _HANDOFF_GENERATION_SUFFIX = "-handoff-bundles"
 _HANDOFF_ENRICHMENT_PREFIX = "enrich-"
@@ -120,6 +126,7 @@ _HANDOFF_ENRICHMENT_SUFFIX = "-handoffs"
 __all__ = [
     "BENCHMARK_PLAN_EXECUTION_RECORD_TYPE",
     "BENCHMARK_PLAN_SOURCE_RECORD_TYPE",
+    "BenchmarkCommandContext",
     "BenchmarkCommandResult",
     "execute_benchmark_job_plan",
     "execute_benchmark_job_plan_json",
@@ -155,7 +162,32 @@ def execute_benchmark_job_plan(
     *,
     dry_run: bool = False,
     cwd: str | Path | None = None,
+    command_context: BenchmarkCommandContext | None = None,
+    env: Mapping[str, str] | None = None,
+    command_timeout_seconds: float | None = None,
 ) -> tuple[BenchmarkCommandResult, ...]:
+    """Run plan commands in order, stopping at the first failure.
+
+    ``command_context`` is entered around each command by name, so a driver can
+    bring up the serving process a benchmark command needs and stop it afterwards;
+    a context that fails records the command as failed. ``env`` replaces the
+    inherited environment of every command when provided. Isolated-arm plans
+    require ``command_context``: their merged record claims a separate serving
+    process per arm, which only the driver's context can guarantee. A command
+    that outlives ``command_timeout_seconds`` is killed and recorded as failed.
+    """
+
+    if plan.get("isolated_arm_jobs") is True and command_context is None and not dry_run:
+        raise ValueError(
+            "isolated-arm plans require a command_context that starts a separate serving "
+            "process for each arm"
+        )
+    if command_timeout_seconds is not None and not (
+        isinstance(command_timeout_seconds, (int, float))
+        and not isinstance(command_timeout_seconds, bool)
+        and command_timeout_seconds > 0
+    ):
+        raise ValueError("command_timeout_seconds must be positive")
     commands = tuple(_commands_from_plan(plan))
     results: list[BenchmarkCommandResult] = []
     for name, argv in commands:
@@ -163,10 +195,44 @@ def execute_benchmark_job_plan(
         if dry_run:
             results.append(BenchmarkCommandResult(name=name, argv=runtime_argv, returncode=0, skipped=True))
             continue
+        completed: subprocess.CompletedProcess[bytes] | None = None
+        timeout_error = ""
         try:
-            completed = subprocess.run(runtime_argv, cwd=str(cwd) if cwd is not None else None, check=False)
+            with nullcontext() if command_context is None else command_context(name):
+                try:
+                    completed = subprocess.run(
+                        runtime_argv,
+                        cwd=str(cwd) if cwd is not None else None,
+                        check=False,
+                        env=None if env is None else dict(env),
+                        timeout=command_timeout_seconds,
+                    )
+                except subprocess.TimeoutExpired:
+                    timeout_error = f"timed out after {command_timeout_seconds:g}s"
         except OSError as exc:
             results.append(BenchmarkCommandResult(name=name, argv=runtime_argv, returncode=127, error=str(exc)))
+            break
+        except Exception as exc:
+            if command_context is None:
+                raise
+            results.append(
+                BenchmarkCommandResult(
+                    name=name,
+                    argv=runtime_argv,
+                    returncode=1,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            )
+            break
+        if completed is None:
+            results.append(
+                BenchmarkCommandResult(
+                    name=name,
+                    argv=runtime_argv,
+                    returncode=124 if timeout_error else 1,
+                    error=timeout_error or "command context suppressed the command's exception",
+                )
+            )
             break
         results.append(BenchmarkCommandResult(name=name, argv=runtime_argv, returncode=completed.returncode))
         if completed.returncode != 0:
@@ -179,8 +245,14 @@ def execute_benchmark_job_plan_json(
     *,
     dry_run: bool = False,
     cwd: str | Path | None = None,
+    command_timeout_seconds: float | None = None,
 ) -> tuple[BenchmarkCommandResult, ...]:
-    return execute_benchmark_job_plan(_plan_from_payload(_plan_payload_for(path)), dry_run=dry_run, cwd=cwd)
+    return execute_benchmark_job_plan(
+        _plan_from_payload(_plan_payload_for(path)),
+        dry_run=dry_run,
+        cwd=cwd,
+        command_timeout_seconds=command_timeout_seconds,
+    )
 
 
 def benchmark_command_results_to_record(
@@ -478,6 +550,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--cwd", help="Optional working directory for all plan commands.")
     parser.add_argument("--dry-run", action="store_true", help="Validate and report commands without running them.")
     parser.add_argument("--result-json", help="Optional path for command execution result JSON.")
+    parser.add_argument(
+        "--command-timeout-seconds",
+        type=float,
+        help="Kill and fail any plan command that runs longer than this.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -485,7 +562,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         plan_source = benchmark_plan_source_payload_to_record(args.plan_json, _driver_path(args.plan_json), plan_payload)
         token = _PRELOADED_PLAN_PAYLOAD.set((args.plan_json, plan_payload))
         try:
-            results = execute_benchmark_job_plan_json(args.plan_json, dry_run=args.dry_run, cwd=args.cwd)
+            results = execute_benchmark_job_plan_json(
+                args.plan_json,
+                dry_run=args.dry_run,
+                cwd=args.cwd,
+                command_timeout_seconds=args.command_timeout_seconds,
+            )
         finally:
             _PRELOADED_PLAN_PAYLOAD.reset(token)
         record = _benchmark_command_results_to_record(results, plan_source=plan_source)
