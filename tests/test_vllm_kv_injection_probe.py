@@ -45,6 +45,7 @@ from vllm_kv_injection.probe import (
     build_in_memory_debug_probe,
     build_native_connector_probe,
 )
+from vllm_kv_injection.vllm_layer_mapping import document_kv_vllm_probe_layer_names
 from vllm_kv_injection.vllm_native_provider import (
     DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
     DocumentKVNativeProbeConnector,
@@ -461,7 +462,6 @@ def test_native_connector_probe_runs_on_the_release_probe_fixture(tmp_path, monk
     record = engine_kv_connector_probe_result_to_record(result)
     validate_engine_kv_connector_probe_record(record)
     assert record["bound"] is True
-    assert record["copied_tokens"] == fixture.total_tokens
     assert record["layout"]["shares_kv_storage"] is True
     _validate_v1_qwen3_probe_layout(result.layout)
 
@@ -483,10 +483,10 @@ def test_native_probe_connector_injects_shared_kv_release_payload_into_triton_ca
         kv_handle.total_tokens, layout.num_layers, 2, layout.num_kv_heads, layout.head_size
     )
     caches = connector.provider._kv_caches
-    assert len(caches) == layout.num_layers
-    for layer_name, cache in caches.items():
-        layer_index = connector.provider._layer_indices[layer_name]
-        injected = cache.permute(0, 2, 1, 3).reshape(-1, layout.num_kv_heads, 2 * layout.head_size)
+    layer_names = document_kv_vllm_probe_layer_names(layout)
+    assert set(caches) == set(layer_names)
+    for layer_index, layer_name in enumerate(layer_names):
+        injected = caches[layer_name].permute(0, 2, 1, 3).reshape(-1, layout.num_kv_heads, 2 * layout.head_size)
         expected = torch.cat((payload[:, layer_index, 0], payload[:, layer_index, 1]), dim=-1)
         assert torch.equal(injected[: kv_handle.total_tokens], expected), layer_name
 

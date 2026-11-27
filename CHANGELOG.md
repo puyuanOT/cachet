@@ -47,11 +47,10 @@
   it already did for `dbfs:/Volumes/...`, and the patched vLLM wheel URI
   (`DOCUMENT_KV_VLLM_PATCHED_WHEEL_URI`) now resolves `dbfs:` URIs the same
   way instead of under `/dbfs`, where Unity Catalog clusters have no Volumes.
-- The vLLM native probe connector accepts the V1 Qwen3 shared K/V layout that
-  release evidence requires of engine probes. Shared and separate K/V layouts
-  serialize the same payload, so the probe scatters both into the Triton packed
-  cache; it used to reject shared layouts, so the release-safe vLLM probe failed
-  on its own fixture.
+- The vLLM native probe connector registers vLLM 0.30.0 Triton packed caches
+  (`[block, kv_head, block_slot, 2 * head_dim]`) for both shared and separate
+  K/V layouts, which serialize the same payload, so the release-safe probe runs
+  on the V1 Qwen3 shared K/V fixture that release evidence requires.
 - vLLM 0.30.0 (CUDA 12.9) serving profile, with the pinned hash-locked vLLM
   runtime lock shipped in the wheel, and `vllm_wheel_repack` for building the
   E5M2-patched vLLM wheel.
